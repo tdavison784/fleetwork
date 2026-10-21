@@ -1,0 +1,32 @@
+# go-rcana: the Locations milestone run as a fleet. One provider, no fallback, no fleet runtime required.
+[project]
+name = "go-rcana"
+packs = ["core", "git"]
+
+[store]
+adapter = "dir"
+ledger = "locations"
+path = "../go-rcana-fleet"          # sibling directory; never inside the product repository
+
+[vars]
+owner = "tdavison784"
+prefix = "L"
+provider = "claude"
+provider_adapter = "claude-code"
+runtime = "headless"
+model = "claude-sonnet-5-5"
+commander_agent = "gr-commander"
+
+[checks]
+build = "go build ./..."
+test = "go test ./..."
+
+[runtime]
+adapter = "headless"
+agent-prefix = "gr-"
+
+[git]
+integration-branch = "locations"
+lane-prefix = "loc"
+merge = "squash"
+frozen = ["cards.json"]

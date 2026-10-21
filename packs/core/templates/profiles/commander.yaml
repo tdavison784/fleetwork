@@ -1,0 +1,7 @@
+# The commander: writes the ledger, integrates lanes. Never does lane work.
+runtime: {{runtime}}
+provider: {{provider}}
+model: {{model}}
+env: {DO_NOT_TRACK: "1"}
+never: [answer-trust-dialog, push]
+context-checkpoint: {{context_checkpoint}}

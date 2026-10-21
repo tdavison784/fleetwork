@@ -1,0 +1,44 @@
+# Release Intelligence: the project the method came from. Two providers with handoff, sealed evaluation.
+# Not yet adopted there (ROADMAP step 6); this is what its config will look like.
+[project]
+name = "release-intelligence"
+packs = ["core", "git", "providers", "eval-integrity"]
+
+[store]
+adapter = "dir"
+ledger = "phase7"
+path = "../Release-Intelligence-fleet"
+
+[vars]
+owner = "tdavison784"
+prefix = "P7"
+provider = "claude"
+provider_adapter = "claude-code"
+runtime = "herdr"
+model = "claude-opus-5-5"
+commander_agent = "ri-commander"
+fallback_tag = "[glm-handoff]"
+sealed_glob = "eval/investigations/*/{expected.yaml,NOTES.md,observed/**}"
+lane_limit = "4"
+
+[checks]
+build = "go build ./... && go vet ./..."
+test = "go test ./..."
+
+[runtime]
+adapter = "herdr"
+agent-prefix = "ri-"
+
+[git]
+integration-branch = "p7-integration"
+lane-prefix = "p7"
+merge = "no-ff"
+frozen = ["eval/gates.yaml", "eval/investigations/gates.yaml"]
+
+[guard]
+threshold = 90
+ctx-threshold = 80
+fallback-tag = "[glm-handoff]"
+
+[eval]
+sealed = ["eval/investigations/*/expected.yaml", "eval/investigations/*/NOTES.md", "eval/investigations/*/observed/**"]

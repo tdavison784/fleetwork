@@ -1,0 +1,9 @@
+# A lane that reads and reports; it changes nothing in its workspace but its status file.
+runtime: {{runtime}}
+provider: {{provider}}
+model: {{model}}
+env: {DO_NOT_TRACK: "1"}
+read-only: true
+never: [answer-trust-dialog, push, integrate]
+hooks: [guard-paths]
+context-checkpoint: {{context_checkpoint}}

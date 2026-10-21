@@ -1,0 +1,12 @@
+[pack]
+name = "providers"
+description = "Usage windows across model providers: handoff to a fallback provider, handback, context checkpoints (the fleet guard)"
+requires = ["core"]
+
+[vars]
+fallback_tag = "[handoff]"
+
+[config.guard]
+threshold = "percent of a provider window at which working agents are paused and handed off (default 90)"
+ctx-threshold = "percent of context at which an agent gets CONTEXT CHECKPOINT (default 80)"
+fallback-tag = "commit subject prefix for work done on the fallback provider"

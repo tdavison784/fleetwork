@@ -1,0 +1,22 @@
+[pack]
+name = "core"
+description = "The method itself: mission, fleet rules, commander and lane briefs, status files, ledger seed, lane formula, base profiles"
+requires = []
+
+# Placeholder defaults; a project overrides them in .fleet.toml [vars] or with `fleet init --var`.
+# owner, provider, runtime and model have no default on purpose: every fleet names them explicitly.
+[vars]
+prefix = "W"
+commander_agent = "fleet-commander"
+provider_adapter = "none"
+lane_limit = "2"
+context_checkpoint = "80"
+
+# The .fleet.toml tables this pack owns, and what each key means.
+[config.checks]
+build = "command that must succeed before a lane reports done (optional)"
+test = "command that must succeed before a lane reports done and after every integration"
+
+[config.runtime]
+adapter = "runtime adapter name (fleetwork/adapters/runtimes/)"
+agent-prefix = "prefix for agent names, so one machine can run several fleets"

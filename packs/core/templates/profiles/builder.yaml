@@ -1,0 +1,8 @@
+# A lane that produces work in its own workspace.
+runtime: {{runtime}}
+provider: {{provider}}
+model: {{model}}
+env: {DO_NOT_TRACK: "1"}
+never: [answer-trust-dialog, push, integrate]
+hooks: [guard-paths, rm-guard]
+context-checkpoint: {{context_checkpoint}}

@@ -7,3 +7,6 @@ guard/PAUSED
 guard/events.jsonl
 guard/archive/
 .fleet/
+.claude/
+*.egg-info/
+build/

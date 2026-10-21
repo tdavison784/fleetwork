@@ -358,12 +358,12 @@ All commands are idempotent on item id, append one history entry per call with `
 | `ledger diff <v1> <v2>`, `ledger blame <id>` | From `history.jsonl`: what changed between two versions; every change to one item with actor and time. |
 | `ledger estimate <kind> [--provider p]` | From `budget.actual` history: median and p90. |
 | `ledger migrate v1→v2` | Converts the two live ledgers; the lint findings on the output are F1–F9. |
-| `ledger export-beads` | `scripts/fleet/ledger-to-beads.py`, unchanged, for `bd ready` / `bd graph` views. |
+| `ledger export --to <mirror> --dest …` | One-way export through a mirror adapter. `beads` first: `tools/ledger-to-beads.py`, ported, for `bd ready` / `bd graph` views. (Was `export-beads`; renamed 2026-10-21 so the core names no tracker, §8.) |
 
 ### 6.1 Adapter interfaces (L2)
 
 Each is one small Python module registered by name in the header. Shipped with the kit: `claude-code`,
-`zai-quota`, `none`, `github`, `claude-code-hooks`.
+`zai-quota`, `none`, `github`, `claude-code-hooks`, `beads` (mirror). The code layout is in `ARCHITECTURE.md`.
 
 ```
 store:        open(uri) -> Dir; sync()            # dir | git: where the directory lives and how it is backed up; mirrors are one-way exporters
@@ -372,6 +372,7 @@ provider:     headroom() -> float | None          # fraction of the current wind
 gate:         check(gate, ledger) -> bool          # for adapter-provided gate types (window, pr, ci, …)
 enforcement:  write(actor, guard_lists, never) -> None   # emits hooks / settings for that actor's session
 events:       read() -> iter of {t, event, provider, …}
+mirror:       export(ledger, dest) -> str             # one-way; nothing is read back
 ```
 
 ## 7. The runtime wrapper (L3), for projects that want a fleet

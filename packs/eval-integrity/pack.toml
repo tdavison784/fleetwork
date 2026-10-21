@@ -1,0 +1,11 @@
+[pack]
+name = "eval-integrity"
+description = "For fleets that measure something: pre-registered protocol, sealed answers, isolated runs, canary, quote-checked scoring"
+requires = ["core"]
+
+[vars]
+sealed_glob = "eval/sealed/**"
+
+[config.eval]
+sealed = "globs only the ground-truth lane may read or write; everyone else's guard.forbid-read"
+protocol = "path of the pre-registered protocol (default: PROTOCOL.md in the ledger directory)"

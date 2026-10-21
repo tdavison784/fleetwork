@@ -1,0 +1,8 @@
+# The agent under test. Model pinned; never continued by a fallback provider; sees only its prepared inputs.
+runtime: {{runtime}}
+provider: {{provider}}
+model: {{model}}
+fallback: null
+env: {DO_NOT_TRACK: "1"}
+never: [answer-trust-dialog, push, integrate]
+hooks: [guard-paths]

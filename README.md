@@ -10,12 +10,32 @@ The **ledger** is the core. Everything else wraps around it.
 
 ## Layout
 
+Start with `AGENTS.md` (how to work here), then `docs/ARCHITECTURE.md` (where everything lives).
+
 | Path | What | State |
 |---|---|---|
-| `docs/LEDGER-DESIGN.md` | Ledger v2: audit of the v1 ledgers, what to take from beads and other systems, the schema, derivation rules, delegations, storage, the CLI, adoption plan | Design, awaiting implementation |
-| `docs/ROADMAP.md` | The whole kit: layers, commands, extraction order | Plan |
-| `guard/` | Fleet guard v4: token-free watchdog that reads provider usage windows, pauses/hands off/hands back agents between providers, nudges agents to checkpoint before their context fills, and auto-starts pre-authorized ledger items. Herdr-based. 23 tests. | Working; still carries Release Intelligence defaults (`ri-` prefix, fleet dir) to be moved into config |
-| `tools/ledger-to-beads.py` | One-way mirror of a v1 ledger into a beads store, with a `--compare-guard` check that `bd ready` matches the guard's derived sets | Working; defaults point at RI paths |
+| `AGENTS.md` | The contract for anyone building the kit: read order, rules, workflow, commands | — |
+| `docs/LEDGER-DESIGN.md` | Ledger v2 spec: audit of v1, what to take from beads and others, schema, derivation, delegations, storage, CLI | Design |
+| `docs/ROADMAP.md` | The kit around the ledger; extraction order | Plan |
+| `docs/ARCHITECTURE.md` | Vocabulary, layers, repository layout, config files, ledger directory, apply batches, how to add things | Current |
+| `docs/WORKPACKAGES.md` | The build plan as 12 work packages: what each owns, order, done criteria | Queue |
+| `docs/DECISIONS.md` | Owner decisions and structural choices, append-only | Current |
+| `src/fleetwork/ledger/` | L1: data model (working), `ledger` CLI with every command registered, stubs per work package | Skeleton |
+| `src/fleetwork/adapters/` | L2: registry and interfaces (working); `dir` store, `none` provider, `jsonl` events (working); the rest stubs | Skeleton |
+| `src/fleetwork/runtime/` | L3: packs and `fleet init` (working), `fleet guard` (runs the v4 guard), lane lifecycle stubs | Skeleton |
+| `packs/` | `core`, `git`, `providers`, `eval-integrity`: templates, profiles, rules and config tables per kind of use case | Working |
+| `examples/` | `.fleet.toml` for go-rcana (portability test) and Release Intelligence | Working |
+| `guard/` | Fleet guard v4: provider usage windows, handoff and handback, context checkpoints, ledger auto-start. Herdr-based | Working; RI defaults until WP-06 |
+| `tools/ledger-to-beads.py` | One-way mirror of a v1 ledger into beads | Working; ported in WP-12 |
+| `tests/` | Kit tests, including `test_architecture.py`, which keeps the core generic and the layers pointing down | — |
+
+## Adopting it in a project
+
+```
+cp examples/go-rcana/.fleet.toml <your-repo>/        # then edit [project], [store], [vars], pack tables
+cd <your-repo> && fleet init                          # renders the packs into the ledger directory
+# fill MISSION.md; then, once WP-01 lands: ledger apply seed.yaml --actor <owner>
+```
 
 ## Layers (dependencies point down)
 
@@ -41,7 +61,7 @@ SQLite index and a generated YAML view; it is never stored in the product reposi
 
 ## Status
 
-Design stage. The guard and the beads mirror are the only running code, both copied from where they ran
-(`~/.claude/fleet-guard`, which was never under version control, and Release Intelligence `scripts/fleet/`).
-First implementation target: the read-only ledger commands (`lint`, `ready`, `migrate`, `windows`), verified
-against the guard's current derivations, then a portability test on a second repository.
+Skeleton in place: data model, config, adapter registry and interfaces, packs and `fleet init` work and are
+tested; every other command exists and names the work package that builds it (`docs/WORKPACKAGES.md`). The
+guard and the beads mirror are the running code carried over from Release Intelligence. Wave 1: WP-01
+(storage), WP-02 (lint and ready), WP-08 (lane design).
