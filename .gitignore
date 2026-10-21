@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+# guard runtime state (never commit)
+guard/state.json
+guard/PAUSED
+guard/events.jsonl
+guard/archive/
+.fleet/
