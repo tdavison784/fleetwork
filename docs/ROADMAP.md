@@ -5,15 +5,15 @@ What exists today, where it came from, and the order to extract it. The ledger d
 
 ## What the method is
 
-| Piece | Origin (Release Intelligence) | Reusable as is? |
+| Piece | Origin (the pilot project, four fleet phases) | Reusable as is? |
 |---|---|---|
-| Commander session plus lanes: one Herdr tab, worktree and `<prefix>/<lane>` branch each | Every phase's `FLEET.md` | Yes |
-| Written rules every lane follows: ownership, commits, status files, finishing with `LANE DONE:`, cleanup, only the commander merges | `docs/phase5/learning-loop/FLEET.md` | ~70%; the rest is project (Go/Temporal) rules that belong in the project's own addendum |
-| Lane instructions: a shared preamble plus one brief per lane | `docs/phase*/…/briefs/` | Yes, as templates |
-| Work ledger: items, provider authorization, auto-start, decision items, provenance | Phases 5 and 6 `LEDGER.yaml` | Yes; v2 in `LEDGER-DESIGN.md` |
+| Commander session plus lanes: one Herdr tab, worktree and `<prefix>/<lane>` branch each | Every fleet's `FLEET.md` | Yes |
+| Written rules every lane follows: ownership, commits, status files, finishing with `LANE DONE:`, cleanup, only the commander merges | The pilot's `FLEET.md` | ~70%; the rest is project-specific (language, framework) rules that belong in the project's own addendum |
+| Lane instructions: a shared preamble plus one brief per lane | The pilot's `briefs/` | Yes, as templates |
+| Work ledger: items, provider authorization, auto-start, decision items, provenance | The pilot's two v1 `LEDGER.yaml` files (`tests/fixtures/v1/`, neutralised) | Yes; v2 in `LEDGER-DESIGN.md` |
 | Fleet guard: usage windows, provider handoff and handback, context checkpoints, ledger auto-start | `guard/` here | Yes, once prefixes and paths are config |
-| Commander state doc and memory notes for resuming after a context reset | `COMMANDER.md` per phase | Yes, as templates |
-| Experiment-integrity kit: pre-registered protocol (amendments only appended), sealed answer files, isolated runs of the agent under test, a canary that proves the isolation, scoring that checks every quote against the text | `PROTOCOL.md`, `scripts/phase6/{lib,canary,scores}.*` | Yes; the unusual part |
+| Commander state doc and memory notes for resuming after a context reset | `COMMANDER.md` per fleet | Yes, as templates |
+| Experiment-integrity kit: pre-registered protocol (amendments only appended), sealed answer files, isolated runs of the agent under test, a canary that proves the isolation, scoring that checks every quote against the text | The pilot's `PROTOCOL.md` and harness scripts | Yes; the unusual part |
 | Hard lessons: never answer trust dialogs, `DO_NOT_TRACK` before third-party CLIs, `rm "${VAR:?}"`, bash 3.2, long jobs under nohup not a watcher, wait on branch tip + agent state not screen text | memory and commander notes | They belong in code, not prose |
 
 ## The kit
@@ -41,20 +41,20 @@ quote-checking scorer.
 
 ## Extraction order
 
-1. **Move, don't redesign.** Guard, mirror and design are here. Next: templates and the Phase 6 harness
-   scripts, as they are, with their RI coupling listed rather than fixed.
+1. **Move, don't redesign.** Guard, mirror and design are here. Next: templates and the pilot's harness
+   scripts, as they are, with their coupling to it listed rather than fixed.
 2. **Ledger v2 read-only commands** (`lint`, `ready`, `migrate`, `windows`), checked against the guard's
    current functions the way `ledger-to-beads.py --compare-guard` does.
 3. **Portability test** on a second repository with different providers and no fleet runtime. Whatever breaks
-   is RI coupling in the core, fixed in the core.
+   is pilot coupling in the core, fixed in the core.
 4. **Guard v5** = v4 minus its ledger parsing, calling `ledger ready`; prefixes and paths from `fleet.toml`.
 5. `gates`, `claim`, `close`, `decide`, `add --formula`, delegations; then `fleet merge`.
-6. Release Intelligence moves its operational churn (ledgers, status files, COMMANDER.md, briefs) into a
+6. The pilot project moves its operational churn (ledgers, status files, COMMANDER.md, briefs) into a
    sibling fleet store; its experiment records stay in its repository as product documentation.
 
 ## Not adopted, and why
 
-gascity + beads as the substrate (pilot report in Release Intelligence `docs/phase6/fleet-pilot/REPORT.md`):
+gascity + beads as the substrate (the substrate pilot: a toy fleet run as one lane of the pilot project):
 every integrity rule and the whole provider-window layer would be ours to build as plugins (~9–13 days), the
 herdr runtime needed six workarounds on macOS, the projects merge >1,000 PRs a month, and a reconciler fights a
 window policy that wants lanes stopped. Ideas taken instead: derived readiness, gates, typed edges, formulas.

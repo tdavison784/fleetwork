@@ -46,7 +46,7 @@ import sys
 
 import yaml
 
-DEFAULT_LEDGER = "docs/phase6/natural-agent/LEDGER.yaml"
+DEFAULT_LEDGER = "LEDGER.yaml"
 DEFAULT_STORE = os.path.expanduser("~/fleetpilot/data/ledger-mirror")
 
 STATUS = {"ready": "open", "in-progress": "in_progress", "blocked": "blocked", "done": "closed",

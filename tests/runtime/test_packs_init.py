@@ -75,7 +75,7 @@ def test_template_conflicts_between_packs_are_errors(tmp_path):
         init.plan(ps, {})
 
 
-@pytest.mark.parametrize("example", ["go-rcana", "release-intelligence"])
+@pytest.mark.parametrize("example", ["go-rcana", "two-provider-eval"])
 def test_examples_render_completely(example, kit_root, tmp_path):
     cfg = config.load(kit_root / "examples" / example / ".fleet.toml")
     ps = packs.resolve(cfg.packs, packs.search_path(cfg))

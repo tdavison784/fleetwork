@@ -1,0 +1,89 @@
+# Project-neutral v1 ledger fixture (pilot-b): the structure of a real v1 ledger with all project text replaced.
+items:
+- id: X-0001
+  title: Lane X-0001
+  kind: lane
+  lane: lane-01
+  status: done
+  note: note text
+  providers:
+  - claude
+  glm-executable: false
+- id: X-0002
+  title: Commander task X-0002
+  kind: commander-task
+  status: done
+  note: note text
+  depends:
+  - X-0001
+  providers:
+  - claude
+  glm-executable: false
+- id: X-0003
+  title: Commander task X-0003
+  kind: commander-task
+  status: done
+  note: note text
+  depends:
+  - X-0002
+  providers:
+  - claude
+  glm-executable: false
+- id: X-0004
+  title: Commander task X-0004
+  kind: commander-task
+  status: done
+  note: note text
+  depends:
+  - X-0003
+  providers:
+  - claude
+  glm-executable: false
+- id: X-0005
+  title: Decision X-0005
+  kind: decision
+  decision-rights: user
+  status: ready
+  note: note text
+  depends:
+  - X-0004
+  providers:
+  - claude
+  glm-executable: false
+- id: X-0006
+  title: Commander task X-0006
+  kind: commander-task
+  status: queued
+  depends:
+  - X-0005
+  providers:
+  - claude
+  glm-executable: false
+- id: X-0007
+  title: Lane X-0007
+  kind: lane
+  lane: lane-02
+  status: done
+  providers:
+  - claude
+  glm-executable: false
+  note: note text
+- id: X-0008
+  title: Decision X-0008
+  kind: decision
+  decision-rights: user
+  status: ready
+  depends:
+  - X-0007
+  providers:
+  - claude
+  glm-executable: false
+- id: X-0009
+  title: Item X-0009
+  kind: product-fix
+  decision-rights: user
+  status: ready
+  providers:
+  - claude
+  glm-executable: false
+  note: note text

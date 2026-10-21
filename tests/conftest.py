@@ -15,7 +15,7 @@ def kit_root():
 
 @pytest.fixture
 def v1_ledger():
-    """Load a live v1 ledger by name: v1_ledger("phase5-learning-loop") -> dict."""
+    """Load a v1 ledger fixture by name: v1_ledger("pilot-a") -> dict."""
     def load(name):
         return yaml.safe_load((FIXTURES / "v1" / f"{name}.yaml").read_text())
     return load

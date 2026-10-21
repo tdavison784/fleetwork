@@ -1,20 +1,18 @@
 # Ledger v2 — design
 
 Status: design proposal, 2026-10-21, revised the same day for portability. Nothing here changes a rule until
-adopted. Relative paths cited as evidence (`docs/phase…`, `scripts/…`) are in the Release Intelligence
-repository, where the v1 ledgers ran; `guard/` and `tools/` are in this repository. Written from an audit of
-the two live ledgers (`docs/phase5/learning-loop/LEDGER.yaml`, 34 items,
-25 commits; `docs/phase6/natural-agent/LEDGER.yaml`, 8 items, 5 commits), the guard's ledger code
-(`~/.claude/fleet-guard/fleet_guard.py` §"window ledger (v4)"), the guard's event archives, the original
-proposal (`docs/phase4/env-impact/proposals/2026-10-16-window-ledger.md`) and the fleetpilot report
-(`docs/phase6/fleet-pilot/REPORT.md`).
+adopted. The evidence is the **pilot project**: the first project the method ran on, over four fleet phases.
+Written from an audit of its two live v1 ledgers (ledger A, 34 items, 25 commits; ledger B, 8 items, 5
+commits; project-neutral copies with the structure kept and every title and note replaced are
+`tests/fixtures/v1/pilot-a.yaml` and `pilot-b.yaml`), the guard's ledger code (`guard/fleet_guard.py`
+§"window ledger (v4)"), the guard's event archives, the original window-ledger proposal (2026-10-16) and the
+report of the substrate pilot (a beads + gascity toy fleet, run as one lane of ledger B).
 
 The ledger is the core of the fleet system: the work queue, the authorization record and the window history.
 Everything else (the guard, lane lifecycle, merge, enforcement hooks) wraps around it and depends on it. It
 depends on nothing but an append-only history log, a SQLite index built from it (Python stdlib) and a directory
 to put them in (§4.6); YAML is the authoring and viewing format, not the store; git is an optional backup of
-the directory, and never the product repository. Release Intelligence is its first user, not
-its definition.
+the directory, and never the product repository. The pilot project is its first user, not its definition.
 
 ## 0. Scope: what the ledger is, and what it must not know
 
@@ -29,12 +27,12 @@ which the current state is derived.
 | Provider names, their usage windows, how headroom is measured | `providers` config + a provider adapter | `claude` from statusline snapshots, `glm` from the Z.AI quota endpoint |
 | Model names | item data (`run.model`), opaque strings | `claude-sonnet-5-5` |
 | Terminal multiplexer, panes, agent lifecycle | fleet runtime wrapper | Herdr |
-| Branches, worktrees, merge policy, test commands | fleet runtime wrapper + project config | `p6na/<lane>`, `go test ./...` |
+| Branches, worktrees, merge policy, test commands | fleet runtime wrapper + project config | `fleet/<lane>`, `go test ./...` |
 | Agent harness, its hooks and permission model | enforcement adapter | Claude Code PreToolUse hooks |
 | Where budget numbers come from | provider adapter | `meta.json tokens.processed`, `~/.claude/statusline-snapshots` |
 | Where handoff events come from | event source, minimal schema (§4.5) | fleet guard `events.jsonl` |
 | Hosted trackers, PR systems | gate adapters | GitHub via `gh` |
-| Project-specific integrity paths | item data (`guard` lists), opaque globs | `eval/investigations/*/expected.yaml` |
+| Project-specific integrity paths | item data (`guard` lists), opaque globs | `eval/cases/*/expected.yaml` |
 | Memory, status files, commander state docs | out of scope | `status/<lane>.md`, `COMMANDER.md` |
 | Where the ledger is stored, and whether that store is versioned | store adapter (§4.6) | today: the product repo's branch, one commit per change (the thing to stop doing) |
 
@@ -63,8 +61,8 @@ milestone is a ready-made queue of items with dependencies and a human owner.
 | **Decisions are items** with `decision-rights` | 7 decision items across the two ledgers; each one records who decided and what (W-0014, W-0028). Nothing was decided "in chat only" once it was an item. |
 | **One writer per window; the guard only reads** | 30 ledger commits, zero merge conflicts, zero corrupt reads (`ledger unreadable` never fired). |
 | **Git-versioned YAML** | Every change is a reviewable diff with an author and a time. |
-| **`integrity` strings on items** | W-0005 ("sealed"), W-0007 ("never merge groundtruth5"), W-0027 ("secrets never weakened") were each honoured. |
-| **Provenance with `because`** | 21 of 34 Phase 5 items say why they exist; the ones that don't are the ones nobody can place later. |
+| **`integrity` strings on items** | W-0005 ("sealed"), W-0007 ("never merge the sealed branch"), W-0027 ("secrets never weakened") were each honoured. |
+| **Provenance with `because`** | 21 of 34 ledger-A items say why they exist; the ones that don't are the ones nobody can place later. |
 | **Commander-level granularity**; lanes keep their own status files | Item counts stayed readable (34, 8). Fine-grained task tracking lives in `status/<lane>.md`. |
 | **Sequential, prefixed ids** (W-, X-) | With one writer they never collided; they read well in prose and commit messages. |
 
@@ -77,8 +75,8 @@ Each finding below was checked against the live files, not remembered.
 `in-progress`. Nothing flags this; the guard silently treats it as not ready, the commander reads the file and
 thinks it is. Two sources of truth for one fact.
 
-**F2. `ready-when` is prose nobody evaluates.** Five Phase 5 items carry it ("fresh Claude window", "PR #7
-merged", "ri-guard no longer runs in it", "Phase 5 report done"). W-0012's was edited mid-window into a
+**F2. `ready-when` is prose nobody evaluates.** Five ledger-A items carry it ("fresh Claude window", "PR #7
+merged", "the guard no longer runs in it", "the report is done"). W-0012's was edited mid-window into a
 conversation ("product owner 09:35 — current window is fine (50%)"). The guard ignores the field entirely.
 These are gates; today a human re-reads them each window.
 
@@ -87,7 +85,7 @@ same thing in 33 of 34 items; W-0031 has `providers: [claude, glm]` with `glm-ex
 requires both, so it was safe, but only because the stricter field happened to be the right one. The field
 name itself hard-codes one provider.
 
-**F4. The window log was designed and never written.** `windows: []` in Phase 5, absent in Phase 6. Yet the
+**F4. The window log was designed and never written.** `windows: []` in ledger A, absent in ledger B. Yet the
 data exists: the guard's archives hold 26 HANDOFF, 24 HANDBACK and 9 RESUME events with timestamps, and
 `git log -p LEDGER.yaml` has every status change with a time. The log was assigned to the commander as a chore,
 and chores at handback lose to the resume burst — the exact problem the proposal set out to fix.
@@ -95,10 +93,10 @@ and chores at handback lose to the resume burst — the exact problem the propos
 **F5. Cost history never accumulated.** `quota-estimate` appears on 2 items, `quota-actual` on 1 (typed by
 hand). The point was that "arm B needs ~1.4M tokens — fresh Claude window only" becomes a recorded fact. It
 didn't, because recording it was manual. The numbers exist: statusline snapshots per session, `meta.json`
-`tokens.processed` per Phase 6 run, `herdr agent get` per lane.
+`tokens.processed` per experiment run, `herdr agent get` per lane.
 
-**F6. The schema drifted between phases because there is none.** Phase 6 dropped `version`, `goal`,
-`windows`, `auto-start` and `provenance` (0 of 8 items say why they exist). Phase 5 used `owner` and `lane`
+**F6. The schema drifted between fleets because there is none.** Ledger B dropped `version`, `goal`,
+`windows`, `auto-start` and `provenance` (0 of 8 items say why they exist). Ledger A used `owner` and `lane`
 for the same thing. Nothing lints the file; `ledger-to-beads.py` had to special-case missing ids.
 
 **F7. `result` and `note` became a second status file.** W-0012's `result` is a 70-word run summary;
@@ -108,18 +106,19 @@ with the ledger pointing at them; otherwise the ledger is read less, not more.
 **F8. `queued` means two different things:** "dependencies unmet" (X-0006) and "held by policy until the
 report is out" (W-0026, W-0034). The first is derivable; the second is a gate. Conflating them is why F1 exists.
 
-**F9. The same decision exists twice.** W-0020 (Phase 5) and X-0008 (Phase 6) are the same gascity question,
-with nothing linking them, because ledgers are per phase and there is no `supersedes` edge.
+**F9. The same decision exists twice.** W-0020 (ledger A) and X-0008 (ledger B) are the same gascity question,
+with nothing linking them, because ledgers are per fleet and there is no `supersedes` edge.
 
 **F10. Lane lifecycle state is scattered.** "LANE DONE" lives in a pane, the merge SHA in `merged:`, the owner
-in `owner:` and in `herdr agent list`, the tab in Herdr, the worktree in `git worktree list`. Each phase we
-re-derive the cleanup checklist by hand, and the one time it slipped (Phase 4, W-0021) it stayed open for a
-phase. Merging a lane is one transaction with six side effects; nothing treats it as one.
+in `owner:` and in `herdr agent list`, the tab in Herdr, the worktree in `git worktree list`. Each fleet we
+re-derive the cleanup checklist by hand, and the one time it slipped (W-0021, a leftover worktree from the
+fleet before) it stayed open for a whole fleet. Merging a lane is one transaction with six side effects;
+nothing treats it as one.
 
 **F11. Limits are hard-coded in the guard.** `MAX_AUTOSTART = 2` is a fleet policy living in a Python
 constant. WIP limits per provider belong in the ledger header.
 
-**F12. Incidents have no home.** fleetpilot's four brief deviations were recorded in X-0007's `note`. They are
+**F12. Incidents have no home.** The substrate pilot lane's four brief deviations were recorded in X-0007's `note`. They are
 findings that should change future briefs; nothing links a deviation to the rule it produced.
 
 **F13. The commander's own authority is prose.** What the commander may do on the owner's behalf (resolve a
@@ -129,23 +128,24 @@ for the commander (see §5, delegations).
 
 ## 3. What to draw from beads and other systems
 
-Fleetpilot proved what beads does well and where it doesn't fit. Take the ideas, not the tool.
+The substrate pilot (a beads + gascity toy fleet, run as one lane of ledger B) proved what beads does well and
+where it doesn't fit. Take the ideas, not the tool.
 
 | From | Idea | Take it? | Why |
 |---|---|---|---|
 | beads `bd ready` | Readiness is **derived**, never stored; status is only open / in-progress / blocked / closed | **Yes** | Fixes F1 and F8 outright. |
 | beads gates | A wait is an explicit object with a type (`human`, `timer`, `bead`, `gh:pr`, `gh:run`) that a `gate check` command evaluates | **Yes, plus one of ours** | Fixes F2. Our novel gate type is `window` (provider headroom), which neither beads nor gascity has. |
 | beads typed edges | Non-blocking links: `discovered-from`, `caused-by`, `supersedes`, `validates`, `waits-for` (fan-in) | **A small subset** | `discovered-from` replaces free-text `because`; `supersedes` fixes F9; `caused-by` gives incidents a home (F12); `waits-for` expresses "merge wave 1 when all five lanes are done" without five edges. |
-| beads formulas / molecules | A repeated workflow is a template that stamps out linked child items | **Yes, as YAML** | Every lane follows the same five steps (brief → run → done → review-merge → cleanup). Phase 5 hand-wrote them 12 times. A `lane` formula emits them with the edges in place. Formulas are per project, in config. |
+| beads formulas / molecules | A repeated workflow is a template that stamps out linked child items | **Yes, as YAML** | Every lane follows the same five steps (brief → run → done → review-merge → cleanup). Ledger A hand-wrote them 12 times. A `lane` formula emits them with the edges in place. Formulas are per project, in config. |
 | beads actor-per-write + Dolt history | Every change has an actor and the history is queryable | **Yes: the log is the truth** (§4.6) | Each CLI mutation is one entry `{v, t, actor, op, item, diff}` in `history.jsonl`; state is derived from it. Beads made the database the truth and then needed Dolt to merge databases; an append-only text log merges and syncs on its own. The v1 draft used one git commit per change, which is what fills a product PR with ledger commits. |
 | beads CAS claim | `--claim` is atomic | **Yes, natively** | SQLite transaction on the expected version `v`; a second writer that read the same `v` fails and re-reads. |
 | beads wisps | Operational items that are worthless once done are ephemeral | **Partly** | Guard checkpoints, canary runs and probes stay in the event stream, not in the ledger. The rule, not the mechanism. |
 | beads hash ids | Collision-free ids for many writers | No | One writer; sequential ids read better. Revisit only if a project runs several independent commanders. |
-| beads labels, Dolt, telemetry, `bd prime` | — | No | Fleetpilot: labels were a lossy encoding of our typed fields; Dolt, telemetry and home-dir writes are costs without a buyer; memory lives in the harness. |
-| gascity reconciler | Desired vs running state, re-converged on a timer | **No, deliberately** | Fleetpilot's riskiest finding: a reconciler fights a window policy that wants lanes *stopped*. The ledger states what is **authorized**, never what should be running. Wrappers react to events; they do not reconcile. |
+| beads labels, Dolt, telemetry, `bd prime` | — | No | The substrate pilot: labels were a lossy encoding of our typed fields; Dolt, telemetry and home-dir writes are costs without a buyer; memory lives in the harness. |
+| gascity reconciler | Desired vs running state, re-converged on a timer | **No, deliberately** | The substrate pilot's riskiest finding: a reconciler fights a window policy that wants lanes *stopped*. The ledger states what is **authorized**, never what should be running. Wrappers react to events; they do not reconcile. |
 | gascity `max_active_sessions` | WIP limit per agent template | Yes | F11: `limits` in the ledger header, per provider. |
 | Temporal | Idempotent activities; durable timers | **Idempotency only** | Every command keyed by item id, so a replayed `close X-0001` is a no-op. A `timer` gate is a durable timer without the server. |
-| Pre-registration (science) | Rules fixed before the run; amendments appended, dated | **Already ours; make it checkable** | `integrity` prose becomes `guard:` lists that an enforcement adapter turns into hooks and pre-merge diffs — the layer fleetpilot found missing. |
+| Pre-registration (science) | Rules fixed before the run; amendments appended, dated | **Already ours; make it checkable** | `integrity` prose becomes `guard:` lists that an enforcement adapter turns into hooks and pre-merge diffs — the layer the substrate pilot found missing. |
 | Kanban | WIP limits, pull not push | Yes | Same as `limits`. |
 | Capability-based security | Authority is granted explicitly, narrowly, at the point of delegation, and is inspectable | **Yes, for the commander** | §5 delegations: the owner grants the commander named capabilities, with conditions, in the ledger header. Same shape as `run.providers` for lanes. |
 | Jira / Linear / GitHub Issues | Hosted trackers | No | The ledger must be readable by an agent with `cat`, offline, inside a worktree, with no credentials. |
@@ -164,7 +164,7 @@ providers:                                  # declared here; the core never hard
   local:   {adapter: none}                  # a provider with no window (e.g. a human, or an unmetered model)
 roles:
   owner:     {actors: ["tdavison784"]}                       # humans; the final authority
-  commander: {actors: ["ri-commander", "fleet-commander"]}   # primary commander agent(s)
+  commander: {actors: ["fw-commander"]}                      # primary commander agent(s)
   deputy:    {actors: ["glm-commander"]}                     # a commander with less delegated authority
 delegations: [...]                          # §5
 formulas:   {lane: formulas/lane.yaml}      # §4.4
@@ -173,8 +173,8 @@ events:     [".fleet/events.jsonl"]         # §4.5; zero or more sources
 
 ### 4.2 Items
 
-The example is deliberately from a different project (the go-rcana Locations milestone) to keep RI out of
-the spec.
+The example is deliberately from a different project (the go-rcana Locations milestone) to keep the pilot
+project out of the spec.
 
 ```yaml
 items:
@@ -200,7 +200,7 @@ items:
       no-push: true
       note: "locations never deal damage; don't add Strength logic"
     brief: briefs/locations-play.md         # required for kind: lane; path relative to the ledger
-    owner: ri-locations                     # set by `ledger claim`, cleared by `ledger close`
+    owner: fw-locations                     # set by `ledger claim`, cleared by `ledger close`
     links: {discovered-from: L-0002, supersedes: L-0001}   # non-blocking typed edges
     budget:
       estimate: {claude: {tokens: 200k}}
@@ -323,8 +323,8 @@ Semantics:
   and a time; the quote lands in the gate's `closed-by` record and in the history entry. W-0028 did exactly
   this by hand ("decided-by: product owner 2026-10-17T10:53").
 - `never` is the capability floor: the enforcement adapter writes it into the commander session's hooks, so
-  it is not only a ledger rule. The four entries above are the lessons from Phase 6 (fleetpilot's trust
-  dialogs, the p4ei/eval `-D` hold, the no-push rule).
+  it is not only a ledger rule. The four entries above are the lessons from the pilot fleets (a lane that
+  answered trust dialogs, a branch deletion that needed `-D` and waited a whole fleet, the no-push rule).
 - Delegations are per role, not per provider, but roles are assigned to actors, and actors run on providers,
   so "the GLM commander may do less" is expressed by putting `glm-commander` in `deputy`.
 - `edit-delegations` in `never` plus the CLI being the only writer (§4.6) means the commander cannot widen
@@ -385,7 +385,7 @@ Pane, worktree and test command come from the project's `fleet.toml`, never from
 
 `guard:` lists and `never:` become enforcement through the adapter: per-actor hooks that deny reads of
 `forbid-read` paths, writes to `freeze` paths, `git push`, and trust-dialog answers; `fleet merge` refuses a
-diff touching a frozen path. Fleetpilot showed the remaining holes (`git log -p`, relative-path `cat` across
+diff touching a frozen path. The substrate pilot showed the remaining holes (`git log -p`, relative-path `cat` across
 worktrees): those close only when sealed objects are absent from the lane's repository, so hooks stay the
 second layer and a sealed branch stays the first.
 
@@ -406,19 +406,20 @@ second layer and a sealed branch stays the first.
 
 1. `ledger/` in this repository with `lint`, `ready`, `migrate`, `windows`; read-only, checked against the
    guard's current functions the way `tools/ledger-to-beads.py --compare-guard` does today.
-2. Convert both RI ledgers into a sibling store (`../Release-Intelligence-fleet/`, `dir` first, `git` once it
-   has something worth backing up): `migrate` replays `git log -p` of the old files as log entries, with the
-   commit author and date as actor and time, so no history is lost; fix the lint findings (X-0005 readiness, W-0031 providers, missing provenance); write the RI
-   header: providers `claude`/`glm`, roles, the delegations in §5, events from the guard. The experiment
-   records (PROTOCOL, SCORES, REPORT, runs) are product documentation and stay in the RI repository; the
-   operational churn (ledgers, status files, COMMANDER.md, briefs) moves.
+2. Convert both pilot ledgers into a sibling store (`../<project>-fleet/`, `dir` first, `git` once it has
+   something worth backing up): `migrate` replays `git log -p` of the old files as log entries, with the
+   commit author and date as actor and time, so no history is lost; fix the lint findings (X-0005 readiness,
+   W-0031 providers, missing provenance); write the pilot's header: its two providers, roles, the delegations
+   in §5, events from the guard. The experiment records (protocol, scores, reports, runs) are product
+   documentation and stay in the pilot repository; the operational churn (ledgers, status files, commander
+   state, briefs) moves.
 3. **Portability test:** a `go-rcana` ledger for the Locations milestone (CLAUDE.md already lists the items
    and their order) with providers `{claude}` only and no fleet runtime. If step 1's code needs a change to
    run there, the change is a bug fix in the core, not a go-rcana adapter.
 4. Guard v5 = v4 minus the ledger functions, calling `ledger ready --provider glm --auto-start`; the 23 guard
    tests move with the code.
 5. `gates`, `claim`, `close`, `decide`, `add --formula`, delegations; then `fleet merge` last.
-6. Release Intelligence and go-rcana become the first two project configs of this repository.
+6. The pilot project and go-rcana become the first two project configs of this repository (`examples/`).
 
 **Decisions recorded** (owner, 2026-10-21): window gates may delay items automatically, including
 provider-pinned ones; the commander may resolve human gates on the owner's say-so with the quote recorded; the

@@ -3,8 +3,8 @@
 A method for running a fleet of coding agents against one goal: a commander session, one agent per lane in its
 own worktree, a work ledger that says who may do what, a guard that hands work between model providers as
 their usage windows fill, and an experiment kit for when the fleet's job is to measure something rather than
-build it. It was worked out over four phases of the Release Intelligence project and is being extracted here
-so it can be reused on any repository.
+build it. It was worked out over four fleet phases of a pilot project and is being extracted here so it can
+be reused on any repository.
 
 The **ledger** is the core. Everything else wraps around it.
 
@@ -24,8 +24,8 @@ Start with `AGENTS.md` (how to work here), then `docs/ARCHITECTURE.md` (where ev
 | `src/fleetwork/adapters/` | L2: registry and interfaces (working); `dir` store, `none` provider, `jsonl` events (working); the rest stubs | Skeleton |
 | `src/fleetwork/runtime/` | L3: packs and `fleet init` (working), `fleet guard` (runs the v4 guard), lane lifecycle stubs | Skeleton |
 | `packs/` | `core`, `git`, `providers`, `eval-integrity`: templates, profiles, rules and config tables per kind of use case | Working |
-| `examples/` | `.fleet.toml` for go-rcana (portability test) and Release Intelligence | Working |
-| `guard/` | Fleet guard v4: provider usage windows, handoff and handback, context checkpoints, ledger auto-start. Herdr-based | Working; RI defaults until WP-06 |
+| `examples/` | `.fleet.toml` for go-rcana (portability test) and a two-provider sealed-evaluation fleet | Working |
+| `guard/` | Fleet guard v4: provider usage windows, handoff and handback, context checkpoints, ledger auto-start. Herdr-based | Working; command-line defaults until WP-06 |
 | `tools/ledger-to-beads.py` | One-way mirror of a v1 ledger into beads | Working; ported in WP-12 |
 | `tests/` | Kit tests, including `test_architecture.py`, which keeps the core generic and the layers pointing down | — |
 
@@ -63,5 +63,5 @@ SQLite index and a generated YAML view; it is never stored in the product reposi
 
 Skeleton in place: data model, config, adapter registry and interfaces, packs and `fleet init` work and are
 tested; every other command exists and names the work package that builds it (`docs/WORKPACKAGES.md`). The
-guard and the beads mirror are the running code carried over from Release Intelligence. Wave 1: WP-01
+guard and the beads mirror are the running code carried over from the pilot project. Wave 1: WP-01
 (storage), WP-02 (lint and ready), WP-08 (lane design).

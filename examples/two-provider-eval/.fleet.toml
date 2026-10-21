@@ -1,0 +1,44 @@
+# Two providers with usage-window handoff, plus a sealed evaluation: the shape of a fleet whose job is to
+# measure an agent as well as build one. Copy, then change [project], [store] and [vars].
+[project]
+name = "two-provider-eval"
+packs = ["core", "git", "providers", "eval-integrity"]
+
+[store]
+adapter = "dir"
+ledger = "wave1"
+path = "../two-provider-eval-fleet"
+
+[vars]
+owner = "owner"
+prefix = "E"
+provider = "claude"
+provider_adapter = "claude-code"
+runtime = "herdr"
+model = "claude-opus-5-5"
+commander_agent = "fw-commander"
+fallback_tag = "[fallback-handoff]"
+sealed_glob = "eval/cases/*/{expected.yaml,NOTES.md,observed/**}"
+lane_limit = "4"
+
+[checks]
+build = "make build"
+test = "make test"
+
+[runtime]
+adapter = "herdr"
+agent-prefix = "fw-"
+
+[git]
+integration-branch = "integration"
+lane-prefix = "lane"
+merge = "no-ff"
+frozen = ["eval/gates.yaml"]
+
+[guard]
+threshold = 90
+ctx-threshold = 80
+fallback-tag = "[fallback-handoff]"
+
+[eval]
+sealed = ["eval/cases/*/expected.yaml", "eval/cases/*/NOTES.md", "eval/cases/*/observed/**"]

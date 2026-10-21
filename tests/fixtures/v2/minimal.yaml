@@ -1,4 +1,4 @@
-# A small v2 ledger in apply-batch form, used by model and (later) lint/derive tests. Deliberately not RI.
+# A small v2 ledger in apply-batch form, used by model and (later) lint/derive tests. Deliberately generic.
 header:
   version: 2
   ledger: demo

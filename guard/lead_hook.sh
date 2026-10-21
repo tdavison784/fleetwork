@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PreToolUse hook: lane-lead signal. In a git worktree that has a .lane-lead file,
-# only the lead role may modify files. Role of this session: $RI_ROLE if set,
+# only the lead role may modify files. Role of this session: $FLEET_ROLE if set,
 # else "glm" when talking to the Z.AI endpoint, else "claude".
 # No .lane-lead file → no-op (exit 0), so this never affects other projects.
 input="$(cat)"
@@ -12,7 +12,7 @@ lead_file="$top/.lane-lead"
 
 lead="$(jq -r '.role // empty' "$lead_file" 2>/dev/null)"
 [ -z "$lead" ] && exit 0
-role="${RI_ROLE:-}"
+role="${FLEET_ROLE:-}"
 if [ -z "$role" ]; then
     case "${ANTHROPIC_BASE_URL:-}" in *z.ai*) role="glm" ;; *) role="claude" ;; esac
 fi

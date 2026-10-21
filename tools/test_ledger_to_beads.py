@@ -1,8 +1,8 @@
 """Tests for ledger-to-beads.py.  Run: python3 -m pytest tools
 
 The mapping tests need nothing. The store tests need `bd` (on PATH or ~/fleetpilot/bin) and skip
-without it; the guard-equivalence tests load ../guard/fleet_guard.py read-only. The phase5/phase6
-cases read the Release Intelligence ledgers from $RI_REPO and skip when that checkout is absent.
+without it; the guard-equivalence tests load ../guard/fleet_guard.py read-only. The v1 ledgers used
+are the project-neutral fixtures in ../tests/fixtures/v1/.
 """
 import copy
 import importlib.util
@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.environ.get("RI_REPO", os.path.expanduser("~/repos/Release-Intelligence-"))  # v1 ledgers live there
+FIXTURES = os.path.join(os.path.dirname(HERE), "tests", "fixtures", "v1")
 spec = importlib.util.spec_from_file_location("ledger_to_beads", os.path.join(HERE, "ledger-to-beads.py"))
 l2b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(l2b)
@@ -24,11 +24,8 @@ needs_bd = pytest.mark.skipif(not os.access(BD, os.X_OK), reason="bd not install
 needs_guard = pytest.mark.skipif(not os.path.isfile(GUARD), reason="fleet guard not present")
 
 
-def ri_ledger(rel):
-    path = os.path.join(REPO, rel)
-    if not os.path.isfile(path):
-        pytest.skip(f"Release Intelligence ledger not present: {path}")
-    return l2b.load_ledger(path)
+def fixture_ledger(name):
+    return l2b.load_ledger(os.path.join(FIXTURES, f"{name}.yaml"))
 
 # Every readiness edge the guard distinguishes, with the ready set it must produce.
 SYNTHETIC = {"items": [
@@ -41,7 +38,7 @@ SYNTHETIC = {"items": [
     {"id": "Z-0005", "title": "dropped", "kind": "lane", "status": "dropped"},
     {"id": "Z-0006", "title": "ready, dep dropped", "kind": "lane", "status": "ready", "depends": ["Z-0005"]},
     {"id": "Z-0007", "title": "ready, dep missing", "kind": "lane", "status": "ready", "depends": ["Z-9999"]},
-    {"id": "Z-0008", "title": "in progress", "kind": "lane", "status": "in-progress", "owner": "ri-z"},
+    {"id": "Z-0008", "title": "in progress", "kind": "lane", "status": "in-progress", "owner": "fw-z"},
     {"id": "Z-0009", "title": "ready, dep in progress", "kind": "lane", "status": "ready", "depends": ["Z-0008"]},
     {"id": "Z-0010", "title": "ready decision", "kind": "decision", "status": "ready", "decision-rights": "user",
      "providers": ["claude"]},
@@ -68,7 +65,7 @@ def test_status_and_native_fields():
     assert r["Z-0002"]["issue_type"] == "lane" and r["Z-0010"]["issue_type"] == "decision"
     assert r["Z-0002"]["dependencies"] == [{"issue_id": "Z-0002", "depends_on_id": "Z-0001", "type": "blocks"}]
     assert r["Z-0002"]["spec_id"] == "briefs/z.md"
-    assert r["Z-0008"]["assignee"] == "ri-z"
+    assert r["Z-0008"]["assignee"] == "fw-z"
     assert r["Z-0012"]["notes"] == "offered to GLM"
 
 
@@ -125,8 +122,8 @@ def test_refuses_to_replace_a_non_store(tmp_path):
         l2b.build_store([], "Z", str(tmp_path / "precious"), BD)
 
 
-def phase6_whatif():
-    d = ri_ledger("docs/phase6/natural-agent/LEDGER.yaml")
+def pilot_b_whatif():
+    d = fixture_ledger("pilot-b")
     for item in d["items"]:  # X-0001 done, X-0002 done, X-0003 ready: the next step becomes ready
         if item["id"] in ("X-0001", "X-0002"):
             item["status"] = "done"
@@ -137,12 +134,12 @@ def phase6_whatif():
 
 @needs_bd
 @needs_guard
-@pytest.mark.parametrize("ledger", ["synthetic", "phase5", "phase6", "phase6-whatif"])
+@pytest.mark.parametrize("ledger", ["synthetic", "pilot-a", "pilot-b", "pilot-b-whatif"])
 def test_bd_ready_equals_guard(tmp_path, ledger):
     d = {"synthetic": lambda: SYNTHETIC,
-         "phase5": lambda: ri_ledger("docs/phase5/learning-loop/LEDGER.yaml"),
-         "phase6": lambda: ri_ledger("docs/phase6/natural-agent/LEDGER.yaml"),
-         "phase6-whatif": phase6_whatif}[ledger]()
+         "pilot-a": lambda: fixture_ledger("pilot-a"),
+         "pilot-b": lambda: fixture_ledger("pilot-b"),
+         "pilot-b-whatif": pilot_b_whatif}[ledger]()
     records = l2b.to_records(d)
     store = l2b.build_store(records, l2b.prefix_of(r["id"] for r in records), str(tmp_path / "s"), BD)
     for view, guard_ids, bd_ids, _ in l2b.compare_guard(d, store, BD, GUARD):

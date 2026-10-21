@@ -9,15 +9,15 @@ Sources (no model calls):
     ~/.claude_token_zai at call time; never printed or logged).
 
 Behaviour:
-  Claude window >= THRESHOLD  ->  PAUSE every working `ri-*` agent (Esc). Then HAND OFF:
-      FIRST the commander (`--commander-agent`, default ri-commander) to `glm-commander`
+  Claude window >= THRESHOLD  ->  PAUSE every working `fw-*` agent (Esc). Then HAND OFF:
+      FIRST the commander (`--commander-agent`, default fw-commander) to `glm-commander`
       (split of its pane, cwd = --commander-cwd, protocol in <fleet-dir>/briefs/commander.md),
       THEN each paused lane to a GLM-5.3 agent `glm-<lane>` in a split of the lane's pane,
       same worktree; GLM agents commit with a "[glm-handoff]" subject prefix.
   Z.AI window >= THRESHOLD    ->  PAUSE every working `glm-*` agent until the Z.AI reset,
       then resume them.
   Claude window reset         ->  HAND BACK: lanes first, the GLM commander LAST (each commits,
-      logs and exits; its pane is closed); each paused `ri-*` agent resumes with a note to
+      logs and exits; its pane is closed); each paused `fw-*` agent resumes with a note to
       review the GLM commits; the Claude commander gets ONE combined RESUME message (lane
       summary, integration-branch commit count, "read the GLM commander log", and any
       glm-* agents the GLM commander started, which are left running).
@@ -27,7 +27,7 @@ Behaviour:
       evidence-prep items go in the glm-commander startup message; decisions and providers:[claude] items
       are never started or offered. RESUME lists ready claude-only items + a ledger delta. Unreadable ledger
       (no PyYAML, missing/bad file) => logged once, v3 behaviour.
-  Context checkpoints         ->  an `ri-*`/`glm-*` agent whose context window crosses
+  Context checkpoints         ->  an `fw-*`/`glm-*` agent whose context window crosses
       --ctx-threshold gets one "CONTEXT CHECKPOINT" prompt (re-armed after a drop of 30 points).
 
 Deterministic log on stdout + events.jsonl. --dry-run logs herdr mutations instead of
@@ -237,7 +237,7 @@ def start_in_pane(gpane, cwd, name, args, prompt):
     """Credentials + lead + agent start + prompt in an existing shell pane. Returns the cwd's HEAD."""
     # credentials enter the pane's shell from the file; the key never appears in argv or logs
     herdr("pane", "run", gpane,
-          f'export RI_ROLE=glm ANTHROPIC_BASE_URL={ZAI_BASE_URL} ANTHROPIC_AUTH_TOKEN="$(cat {ZAI_TOKEN_FILE})" '
+          f'export FLEET_ROLE=glm ANTHROPIC_BASE_URL={ZAI_BASE_URL} ANTHROPIC_AUTH_TOKEN="$(cat {ZAI_TOKEN_FILE})" '
           f'ANTHROPIC_SMALL_FAST_MODEL={args.glm_model}')
     set_lead(cwd, "glm", name)
     time.sleep(2)
@@ -754,13 +754,13 @@ def build_parser():
     ap = argparse.ArgumentParser(description="Fleet guard v3 (see README-guard.md)")
     ap.add_argument("--commander-pane", default="", help="deprecated (v2); ignored")
     ap.add_argument("--commander-session", default="", help="session id of the commander, for its ctx % in the log")
-    ap.add_argument("--commander-agent", default="ri-commander")
+    ap.add_argument("--commander-agent", default="fw-commander")
     ap.add_argument("--commander-cwd", default="", help="integration worktree; required unless --no-handoff")
-    ap.add_argument("--fleet-dir", default="docs/phase4/env-impact")
-    ap.add_argument("--lane-prefix", default="p5ll", help="ledger auto-start lanes: branch <p>/<lane>, worktree <p>-<lane>")
+    ap.add_argument("--fleet-dir", default="fleet")
+    ap.add_argument("--lane-prefix", default="lane", help="ledger auto-start lanes: branch <p>/<lane>, worktree <p>-<lane>")
     ap.add_argument("--integration-branch", default="", help="base for auto-start lane branches (default: commander-cwd's branch)")
     ap.add_argument("--workspace", default="w1", help="herdr workspace for auto-start lane tabs")
-    ap.add_argument("--prefix", default="ri-")
+    ap.add_argument("--prefix", default="fw-")
     ap.add_argument("--glm-prefix", default="glm-")
     ap.add_argument("--glm-model", default="glm-5.3")
     ap.add_argument("--threshold", type=float, default=90.0)

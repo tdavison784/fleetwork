@@ -35,7 +35,7 @@ def test_example_batches_parse(v2_ledger):
 
 def test_v1_fixtures_parse_without_loss(v1_ledger):
     # v1 keys the model doesn't know land in `extra`; migration (WP-03) maps them properly.
-    for name in ("phase5-learning-loop", "phase6-natural-agent"):
+    for name in ("pilot-a", "pilot-b"):
         d = v1_ledger(name)
         led = Ledger.from_dict(d)
         assert len(led.items) == len(d["items"])

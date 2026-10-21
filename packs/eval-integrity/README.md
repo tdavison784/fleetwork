@@ -8,5 +8,5 @@ Templates: `PROTOCOL.md` (pre-registered, amendments appended), `rules/eval-inte
 `briefs/groundtruth.md`, `profiles/investigator.yaml` (the agent under test: model pinned, no fallback ever).
 
 Harness scripts still to move here, as they are, with their coupling listed (WP-11): the isolated runner,
-the canary that proves the isolation, extraction, and the quote-checking scorer, from Release Intelligence
-`scripts/phase6/{lib.sh,run-natural.sh,canary.sh,extract.sh,scores.py}`.
+the canary that proves the isolation, extraction, and the quote-checking scorer, from the pilot project, whose harness
+had an isolation library, a natural-agent runner, a canary, an extractor and a scorer.

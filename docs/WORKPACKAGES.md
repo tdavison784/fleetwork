@@ -56,7 +56,7 @@ entries carry each commit's author and date.
 
 **Owns:** `src/fleetwork/ledger/windows.py`, `src/fleetwork/adapters/events/`, `tests/ledger/test_windows.py`.
 **Spec:** LEDGER-DESIGN §4.5, §6 (`windows`, `estimate`, `diff`, `blame`).
-**Done when:** `ledger windows` on a migrated Phase 5 ledger plus a guard `events.jsonl` sample lists each
+**Done when:** `ledger windows` on the migrated `pilot-a` fixture plus a guard `events.jsonl` sample lists each
 window with executed and deferred items; guard event names (`HANDOFF`, `HANDBACK`, `RESUME`, `PAUSE`, `CTX`)
 are normalised to the §4.5 names in `windows.py`, not in the adapter.
 
@@ -116,7 +116,7 @@ reads, frozen writes, `git push` and trust-dialog answers in a canary session.
 **Owns:** `packs/eval-integrity/`.
 **Spec:** ROADMAP "Experiment module".
 **Done when:** the isolated runner, canary, extraction and quote-checking scorer are in the pack as they ran
-in Release Intelligence, with their coupling to it listed in the pack README rather than fixed.
+in the pilot project, with their coupling to it listed in the pack README rather than fixed.
 
 ## WP-12: Sync and mirrors
 

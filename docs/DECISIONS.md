@@ -6,7 +6,7 @@ attributed; structural choices made while building are marked as such and can be
 ## 2026-10-21 — owner
 
 - **The ledger is the core** of a reusable fleet kit; everything else wraps around it. It must not be designed
-  around Release Intelligence ("this system needs to be re-usable for all other projects as well").
+  around the pilot project ("this system needs to be re-usable for all other projects as well").
 - **Storage:** the ledger is never stored in the product repository and not one commit per change ("multi
   hundred commit PRs won't fly"). The history log is the truth, SQLite the index, YAML a generated view
   (LEDGER-DESIGN §4.6).
@@ -14,7 +14,7 @@ attributed; structural choices made while building are marked as such and can be
 - **Human gates:** the commander may resolve them on the owner's say-so, with the quote recorded.
 - **Delegations:** a standing rule set in the ledger header says what the commander may do on the owner's
   behalf, with a `never` floor (push, force-delete-branch, answer-trust-dialog, edit-delegations).
-- **Not adopted:** gascity + beads as the substrate (fleetpilot report); ideas taken instead (ROADMAP).
+- **Not adopted:** gascity + beads as the substrate (substrate pilot report); ideas taken instead (ROADMAP).
 
 ## 2026-10-21 — structural choices (scaffold)
 
