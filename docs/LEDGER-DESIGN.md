@@ -11,15 +11,16 @@ proposal (`docs/phase4/env-impact/proposals/2026-10-16-window-ledger.md`) and th
 
 The ledger is the core of the fleet system: the work queue, the authorization record and the window history.
 Everything else (the guard, lane lifecycle, merge, enforcement hooks) wraps around it and depends on it. It
-depends on nothing but YAML, an append-only history file and a directory to put them in (§4.6); git is one
-optional store among several, and never the product repository. Release Intelligence is its first user, not
+depends on nothing but an append-only history log, a SQLite index built from it (Python stdlib) and a directory
+to put them in (§4.6); YAML is the authoring and viewing format, not the store; git is an optional backup of
+the directory, and never the product repository. Release Intelligence is its first user, not
 its definition.
 
 ## 0. Scope: what the ledger is, and what it must not know
 
 **The ledger knows:** items, their typed relationships, their status, who may execute them, who may decide
-them, what holds them, what they cost, and what happened to them, in a file whose history is its own
-append-only log.
+them, what holds them, what they cost, and what happened to them, as an append-only log of changes from
+which the current state is derived.
 
 **The ledger must not know** (each of these is an adapter or a wrapper, declared in config, never in the core):
 
@@ -136,8 +137,8 @@ Fleetpilot proved what beads does well and where it doesn't fit. Take the ideas,
 | beads gates | A wait is an explicit object with a type (`human`, `timer`, `bead`, `gh:pr`, `gh:run`) that a `gate check` command evaluates | **Yes, plus one of ours** | Fixes F2. Our novel gate type is `window` (provider headroom), which neither beads nor gascity has. |
 | beads typed edges | Non-blocking links: `discovered-from`, `caused-by`, `supersedes`, `validates`, `waits-for` (fan-in) | **A small subset** | `discovered-from` replaces free-text `because`; `supersedes` fixes F9; `caused-by` gives incidents a home (F12); `waits-for` expresses "merge wave 1 when all five lanes are done" without five edges. |
 | beads formulas / molecules | A repeated workflow is a template that stamps out linked child items | **Yes, as YAML** | Every lane follows the same five steps (brief → run → done → review-merge → cleanup). Phase 5 hand-wrote them 12 times. A `lane` formula emits them with the edges in place. Formulas are per project, in config. |
-| beads actor-per-write + Dolt history | Every change has an actor and the history is queryable | **Yes, via an append-only log** (§4.6) | Each CLI mutation appends `{t, actor, op, item, diff}` to `history.jsonl` beside the YAML. The v1 draft used one git commit per change for this; that is what makes a product PR carry hundreds of ledger commits, so history moves into the ledger itself and git becomes optional. |
-| beads CAS claim | `--claim` is atomic | **Cheaply, via the log** | `claim` appends with an expected version under a file lock and fails if the version moved. One writer per window makes a race rare; a project with several commanders gets safety for free. |
+| beads actor-per-write + Dolt history | Every change has an actor and the history is queryable | **Yes: the log is the truth** (§4.6) | Each CLI mutation is one entry `{v, t, actor, op, item, diff}` in `history.jsonl`; state is derived from it. Beads made the database the truth and then needed Dolt to merge databases; an append-only text log merges and syncs on its own. The v1 draft used one git commit per change, which is what fills a product PR with ledger commits. |
+| beads CAS claim | `--claim` is atomic | **Yes, natively** | SQLite transaction on the expected version `v`; a second writer that read the same `v` fails and re-reads. |
 | beads wisps | Operational items that are worthless once done are ephemeral | **Partly** | Guard checkpoints, canary runs and probes stay in the event stream, not in the ledger. The rule, not the mechanism. |
 | beads hash ids | Collision-free ids for many writers | No | One writer; sequential ids read better. Revisit only if a project runs several independent commanders. |
 | beads labels, Dolt, telemetry, `bd prime` | — | No | Fleetpilot: labels were a lossy encoding of our typed fields; Dolt, telemetry and home-dir writes are costs without a buyer; memory lives in the harness. |
@@ -234,33 +235,41 @@ The window log (§6) is derived from event sources declared in the header. Each 
 `{t, event, provider}` where `event ∈ {handoff, handback, resume, pause, checkpoint}`; extra fields are
 kept verbatim. Today's guard already emits a superset; a different guard, or a cron job, emits the same five.
 
-### 4.6 Storage: the ledger is not in the product repository
+### 4.6 Storage: a log, an index and a view; never the product repository
 
-Owner concern, 2026-10-21: "multi-hundred-commit PRs won't fly" at work. They were a consequence of two v1
-choices, both dropped here: the ledger lived on the product branch, and every change was a commit.
+Two owner concerns, 2026-10-21: "multi-hundred-commit PRs won't fly" at work (a consequence of two v1
+choices, both dropped: the ledger lived on the product branch, and every change was a commit), and "is a YAML
+file the best option, not a database?" (no; v1's worst findings, F1, F3 and F6, were all hand edits of a file
+that was also the store).
 
-**Layout.** A ledger is a directory: `<store>/<ledger>/LEDGER.yaml` (the canonical, human-readable state),
-`history.jsonl` (append-only; every mutation as `{v, t, actor, op, item, diff, snapshot_sha256}`), and the
-ledger-relative files it points at (`briefs/`, `runs/`, `formulas/`). The product repository holds one pointer
-file, `.fleet.toml`, naming the store; product PRs carry product changes only.
+**Three artifacts, one truth.** A ledger is a directory, `<store>/<ledger>/`:
 
-**History is the log, not commits.** The CLI appends one line per mutation. `ledger windows`, `ledger diff
-<v1> <v2>`, `ledger blame <id>` and the delegation audit read the log. A hand edit of the YAML is allowed:
-the next command notices the snapshot hash does not match the last entry, records an `edited-by-hand` entry
-with the computed diff and the file's mtime, and continues. Lint fails only if the hand edit touched
-`delegations` (§5), because that section has an owner-only rule.
+| Artifact | Role | Notes |
+|---|---|---|
+| `history.jsonl` | **The truth.** Append-only; one entry per mutation: `{v, t, actor, op, item, diff}` | Text. Merges, syncs and diffs on its own; survives any tool; readable with `tail`. |
+| `ledger.db` | **The index.** SQLite (Python stdlib), rebuilt from the log at any time by `ledger rebuild` | ACID; the CAS on `v`; concurrent readers; queries for `ready`, `windows`, `estimate`; state and history written in one transaction so they cannot drift. |
+| `LEDGER.yaml` | **A view.** Regenerated on every write; read-only | What agents `cat` and humans read in a PR to the fleet store. Editing it changes nothing. |
 
-**CAS is the log's version.** Every mutating command takes a file lock, reads the version `v` of the last
-entry, applies, and appends `v+1`. A second writer that read the same `v` fails and re-reads. No store support
-needed.
+Beside them: the ledger-relative files items point at (`briefs/`, `runs/`, `formulas/`). The product
+repository holds one pointer file, `.fleet.toml`, naming the store; product PRs carry product changes only.
+
+**Humans still author in YAML.** `ledger apply <file.yaml>` ingests a hand-written batch of items or edits as
+log entries (delegation-checked per entry); formulas, seeds and the v1 migration all go through it. Authoring
+ergonomics stay; the store stops accepting edits. The CLI is the only writer, which is what makes the
+owner-only rule on `delegations` (§5) enforceable rather than linted after the fact.
+
+**Why the log is the truth and not the database.** A binary file does not merge or diff, and syncing it
+between machines or people is exactly where SQLite breaks; beads made the database the truth and then needed
+Dolt to merge databases. An append-only text log is the sync and backup unit; the index is a local cache of
+it. Two writers on different machines can still append the same `v`; `rebuild` reports the conflict, and the
+fleet rule "one writer per window" keeps it rare. The design says this rather than claiming multi-master.
 
 **Store adapters** (chosen in `.fleet.toml`; the core sees a directory):
 
 | Store | What it adds | When |
 |---|---|---|
 | `dir` | Nothing; a directory (default a sibling `<project>-fleet/`, or `~/.fleet/<project>/`) | Single machine, personal use, the first weeks of any adoption |
-| `git` | The same directory as its own repository; commit cadence `per-window` or `manual` (never per change, the log already is the history); push for backup or sharing | A team sharing a fleet, or wanting an off-machine copy |
-| `sqlite` | The log in a table, YAML materialized on read; concurrent readers | Several commanders on one host |
+| `git` | The same directory as its own repository, committing `history.jsonl` and the view (never `ledger.db`); cadence `per-window` or `manual`; push for backup or sharing | A team sharing a fleet, or wanting an off-machine copy |
 | `github-issues` / `jira` | A **mirror**, like `export-beads`: items become issues with the typed fields in the body, one way | Workplaces that require work to be visible in the tracker. Never the source of truth: agents need offline, atomic, schema-complete access. |
 
 **Lane commits are a separate knob.** The product history question also covers lane branches. `fleet merge`
@@ -318,11 +327,10 @@ Semantics:
   dialogs, the p4ei/eval `-D` hold, the no-push rule).
 - Delegations are per role, not per provider, but roles are assigned to actors, and actors run on providers,
   so "the GLM commander may do less" is expressed by putting `glm-commander` in `deputy`.
-- `edit-delegations` in `never` plus the lint rule (the history entry for a delegations change must carry an
-  owner actor, and a hand edit of that section fails lint) means the commander cannot widen its own authority,
-  by construction rather than by vigilance. The residual hole is an agent forging the log entry's actor; the
-  `git` and `sqlite` stores can sign or restrict that, the `dir` store cannot, and the design says so rather
-  than pretending otherwise.
+- `edit-delegations` in `never` plus the CLI being the only writer (§4.6) means the commander cannot widen
+  its own authority, by construction rather than by vigilance. The residual hole is an agent passing a forged
+  `--actor`, or appending to `history.jsonl` by hand; `rebuild` flags entries whose `v` or hash chain is wrong,
+  the `git` store can additionally sign commits, and the design says this rather than pretending otherwise.
 
 Decision recorded 2026-10-21 (owner): a `window` gate **may** delay an item automatically, including
 `providers: [claude]` items; that is what the field is for. Operationally: `ledger gates check` leaves the
@@ -336,12 +344,14 @@ All commands are idempotent on item id, append one history entry per call with `
 
 | Command | Does |
 |---|---|
-| `ledger lint` | Schema; ids monotonic and unique; `needs` exist; `blocked` has a gate; `lane` has an existing brief; `decision` has `run.rights`; `done` has `result` or `merged`; `in-progress` has `owner`; providers referenced are declared; `limits` not exceeded; delegations edited only by owner actors; snapshot hash matches the last history entry (else records `edited-by-hand`). Runs before every mutating command. |
+| `ledger lint` | Schema; ids monotonic and unique; `needs` exist; `blocked` has a gate; `lane` has an existing brief; `decision` has `run.rights`; `done` has `result` or `merged`; `in-progress` has `owner`; providers referenced are declared; `limits` not exceeded; delegations changed only by owner actors; index matches the log. Runs before every mutating command and on any `apply` batch. |
+| `ledger apply <file.yaml> --actor a` | Ingests hand-authored items or edits as log entries; the YAML authoring path (§4.6). |
+| `ledger rebuild` | Rebuilds `ledger.db` and `LEDGER.yaml` from `history.jsonl`; reports version conflicts. |
 | `ledger ready [--provider p] [--auto-start]` | The derived sets (§4.3). Today's `ledger_offered` / `ledger_autostartable` / `ledger_claude_ready`, moved out of the guard. |
 | `ledger gates check [--dry-run]` | Evaluates `timer`, `item` (built in), `window` (provider adapter), `pr` (tracker adapter); closes satisfied ones. `human` closes only by `gates resolve`. |
 | `ledger gates resolve <id> <n> --actor a --why "…"` | Delegation-checked (§5). |
 | `ledger add [--formula f --var k=v…] --actor a` | Stamps out items with edges; checks `items.add` delegation and `budget-cap`. |
-| `ledger claim <id> <agent> --actor a` | Lock, read version, apply, append; fails if the version moved under it. |
+| `ledger claim <id> <agent> --actor a` | One transaction on the expected version; fails if it moved. |
 | `ledger close <id> [--merged sha] [--result path] --actor a` | Fills `budget.actual` through the provider adapter, clears owner, sets done. |
 | `ledger decide <id> --actor a --why "…"` | Marks a decision done; `decidable` rule (§4.3). |
 | `ledger windows` | Derived window log: per window, executed, deferred (with the gate or provider that held it), merges, budget start/end. Joins the event sources with `history.jsonl`. Nobody writes it, so it is never stale. |
@@ -356,7 +366,7 @@ Each is one small Python module registered by name in the header. Shipped with t
 `zai-quota`, `none`, `github`, `claude-code-hooks`.
 
 ```
-store:        open(uri) -> Dir; lock(); read(); append(entry); sync()   # dir | git | sqlite; mirrors are one-way exporters
+store:        open(uri) -> Dir; sync()            # dir | git: where the directory lives and how it is backed up; mirrors are one-way exporters
 provider:     headroom() -> float | None          # fraction of the current window left; None = unmetered
               usage(session_ids) -> {tokens: int, cost: float | None}
 gate:         check(gate, ledger) -> bool          # for adapter-provided gate types (window, pr, ci, …)
@@ -380,8 +390,8 @@ second layer and a sealed branch stays the first.
 
 ## 8. What stays deliberately simple
 
-- **YAML plus an append-only log, one directory per ledger, one writer per window.** Every system reviewed
-  adds a database to get concurrency we don't have; the versioned append in `claim` covers the rare case.
+- **A log, a stdlib SQLite index and a generated YAML view, one directory per ledger, one writer per
+  window.** No server, no new dependency, no database as the unit of sync.
 - **Not in the product repository.** Its PRs stay about the product; the ledger's own history is the log.
 - **Commander-level items.** Lanes keep their own status files; the ledger never lists a lane's sub-tasks.
 - **Sequential ids.**
@@ -396,8 +406,8 @@ second layer and a sealed branch stays the first.
 1. `ledger/` in this repository with `lint`, `ready`, `migrate`, `windows`; read-only, checked against the
    guard's current functions the way `tools/ledger-to-beads.py --compare-guard` does today.
 2. Convert both RI ledgers into a sibling store (`../Release-Intelligence-fleet/`, `dir` first, `git` once it
-   has something worth backing up), seeding `history.jsonl` from `git log -p` of the old files so no history
-   is lost; fix the lint findings (X-0005 readiness, W-0031 providers, missing provenance); write the RI
+   has something worth backing up): `migrate` replays `git log -p` of the old files as log entries, with the
+   commit author and date as actor and time, so no history is lost; fix the lint findings (X-0005 readiness, W-0031 providers, missing provenance); write the RI
    header: providers `claude`/`glm`, roles, the delegations in §5, events from the guard. The experiment
    records (PROTOCOL, SCORES, REPORT, runs) are product documentation and stay in the RI repository; the
    operational churn (ledgers, status files, COMMANDER.md, briefs) moves.

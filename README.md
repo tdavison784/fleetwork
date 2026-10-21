@@ -23,11 +23,12 @@ The **ledger** is the core. Everything else wraps around it.
 L3  fleet runtime     lane start / watch / merge / cleanup; the guard          wraps Herdr, git worktrees
 L2  adapters          providers, gate evaluators, budget collectors,
                       event sources, enforcement writers, stores               tiny interfaces, one file each
-L1  ledger CLI        lint, ready, gates, claim, close, add, windows, migrate  Python + PyYAML
-L0  ledger spec       file format + history log + derivation rules             docs/LEDGER-DESIGN.md §4
+L1  ledger CLI        lint, ready, gates, claim, close, apply, windows, migrate  Python stdlib + PyYAML
+L0  ledger spec       history log (truth) + SQLite index + YAML view + rules   docs/LEDGER-DESIGN.md §4
 ```
 
-A project adopts L0+L1 with a config file and no code. It is never stored in the product repository.
+A project adopts L0+L1 with a config file and no code. The ledger is an append-only log of changes with a
+SQLite index and a generated YAML view; it is never stored in the product repository.
 
 ## Rules the code must keep
 
