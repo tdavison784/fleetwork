@@ -55,7 +55,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.saved = {k: getattr(fg, k) for k in ("herdr", "git_head", "now", "claude_usage", "zai_usage",
-                                                  "STATE_DIR", "FLAG", "STATE", "EVENTS", "DRY", "MODELS_FILE")}
+                                                  "STATE_DIR", "FLAG", "STATE", "EVENTS", "DRY", "MODELS_FILE", "set_lead")}
         fg.set_state_dir(self.tmp)
         fg.DRY = False
         fg.MODELS_FILE = os.path.join(self.tmp, "models.txt")
@@ -65,6 +65,8 @@ class Base(unittest.TestCase):
         self.contexts = {}
         self.zai = {}
         fg.herdr = self.h
+        real_set_lead = fg.set_lead
+        fg.set_lead = lambda cwd, role, holder: real_set_lead(cwd, role, holder) if os.path.isdir(cwd) else True
         fg.git_head = lambda p: "base" + "0" * 36
         fg.now = lambda: self.t
         fg.claude_usage = lambda s: (self.windows, self.t - 1, None, self.contexts)
@@ -118,6 +120,169 @@ class Base(unittest.TestCase):
 
 
 class HandoffTests(Base):
+    def test_saved_handoffs_require_explicit_opt_in_for_recovery(self):
+        self.a.no_handoff = True
+        for state in ({"handoff": {"fw-lane": {}}},
+                      {"commander": {"agent": "glm-commander"}},
+                      {"failed_autostarts": {"W-1": {}}},
+                      {"zai_paused": True, "glm_paused": ["glm-lane"]}):
+            with self.subTest(state=state):
+                with self.assertRaisesRegex(ValueError, "--handoff"):
+                    fg.validate_recovery(state, self.a)
+                self.a.no_handoff = False
+                fg.validate_recovery(state, self.a)
+                self.a.no_handoff = True
+        fg.validate_recovery({"commander": {"skipped": True}}, self.a)
+
+    def test_default_monitoring_never_polls_fallback(self):
+        self.assertTrue(fg.build_parser().parse_args([]).no_handoff)
+        self.a.no_handoff = True
+        fg.zai_usage = lambda: self.fail("unexpected Z.AI quota request")
+        self.trip_claude()
+        self.step()
+        self.settle()
+        self.step()
+        self.assertFalse(self.h.find("agent", "start"))
+
+    def test_opted_in_guard_polls_quota_and_hands_off(self):
+        self.assertFalse(fg.build_parser().parse_args(["--handoff"]).no_handoff)
+        calls = []
+        fg.zai_usage = lambda: calls.append(True) or {}
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.assertTrue(calls)
+        self.assertIn("glm-bundle", [c[2] for c in self.h.find("agent", "start")])
+
+    def test_handback_retries_failed_lead_without_reclosing_pane(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        original = fg.set_lead
+        fg.set_lead = lambda cwd, role, holder: False if holder == "fw-bundle" else original(cwd, role, holder)
+        self.t += 4000
+        self.windows = {}
+        self.h.calls.clear()
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertTrue(self.st["handoff"]["fw-bundle"]["closed"])
+        with open(fg.STATE) as saved:
+            self.assertTrue(json.load(saved)["handoff"]["fw-bundle"]["closed"])
+        self.assertFalse(self.h.prompts("fw-bundle"))
+        self.h.calls.clear()
+        fg.set_lead = original
+        self.step()
+        self.assertFalse(any(c[2] == "glm-bundle" for c in self.h.find("agent", "prompt")))
+        self.assertFalse(any(c[2] == "w1:pG2" for c in self.h.find("pane", "close")))
+        self.assertFalse(os.path.exists(fg.FLAG))
+        self.assertTrue(self.h.prompts("fw-bundle"))
+
+    def test_incomplete_start_retries_pane_close_without_agent_calls(self):
+        for operation in ("configure", "start"):
+            with self.subTest(operation=operation):
+                self.h.calls.clear()
+                self.h.agent_list = [ag("fw-bundle", "idle")]
+                def fail_initial(*args, **kwargs):
+                    if args[:2] == ("pane", "close"):
+                        return {}
+                    if operation == "configure" and args[:2] == ("pane", "run"):
+                        return {}
+                    if operation == "start" and args[:3] == ("agent", "start", "glm-bundle"):
+                        return {}
+                    return self.h(*args, **kwargs)
+                fg.herdr = fail_initial
+                state = {}
+                fg.handoff("fw-bundle", state, self.a)
+                self.assertFalse(state["handoff"]["fw-bundle"]["prompted"])
+                with open(fg.STATE) as saved:
+                    self.assertFalse(json.load(saved)["handoff"]["fw-bundle"]["prompted"])
+                self.h.calls.clear()
+                fg.herdr = self.h
+                self.assertIsNotNone(fg.handback(state, self.a, True))
+                self.assertFalse(self.h.find("agent", "prompt"))
+                self.assertFalse(self.h.find("agent", "wait"))
+                self.assertTrue(self.h.find("pane", "close"))
+
+    def test_failed_start_with_failed_lead_restore_is_tracked_closed(self):
+        self.h.agent_list = [ag("fw-bundle", "idle")]
+        original = self.h
+        def fail_prompt(*args, **kwargs):
+            if args[:3] == ("agent", "prompt", "glm-bundle"):
+                return {}
+            return original(*args, **kwargs)
+        fg.herdr = fail_prompt
+        fg.set_lead = lambda cwd, role, holder: role != "claude"
+        state = {}
+        fg.handoff("fw-bundle", state, self.a)
+        self.assertTrue(state["handoff"]["fw-bundle"]["closed"])
+        self.h.calls.clear()
+        fg.set_lead = lambda cwd, role, holder: True
+        self.assertIsNotNone(fg.handback(state, self.a, False))
+        self.assertFalse(self.h.find("agent", "prompt"))
+        self.assertFalse(self.h.find("pane", "close"))
+
+    def test_paused_replacement_waits_for_safe_handback(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.h.calls.clear()
+        self.st.update(zai_paused=True, zai_wake_at=self.t + 10000)
+        self.t += 4000
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertIn("fw-bundle", self.st["handoff"])
+        self.assertFalse(self.h.find("pane", "close"))
+        self.assertFalse(self.h.prompts("fw-bundle"))
+        self.st["zai_wake_at"] = self.t - 1
+        self.step()
+        self.assertFalse(os.path.exists(fg.FLAG))
+        self.assertTrue(any(p.startswith("HANDBACK") for p in self.h.prompts("glm-bundle")))
+
+    def test_failed_start_or_prompt_does_not_register_handoff(self):
+        for command in ("start", "prompt"):
+            with self.subTest(command=command):
+                wt = os.path.join(self.tmp, command)
+                os.mkdir(wt)
+                self.h.agent_list = [ag("fw-bundle", "idle", wt)]
+                original = self.h
+                def fail(*args, **kwargs):
+                    if args[:3] == ("agent", command, "glm-bundle"):
+                        return {}
+                    return original(*args, **kwargs)
+                fg.herdr = fail
+                state = {}
+                fg.handoff("fw-bundle", state, self.a)
+                self.assertFalse(state.get("handoff"))
+                self.assertTrue(self.h.find("pane", "close"))
+                with open(os.path.join(wt, ".lane-lead")) as lead:
+                    self.assertEqual(json.load(lead)["holder"], "fw-bundle")
+                fg.herdr = self.h
+
+    def test_failed_lead_transfer_does_not_prompt_or_register(self):
+        self.h.agent_list = [ag("fw-bundle", "idle")]
+        fg.set_lead = lambda cwd, role, holder: role != "glm"
+        state = {}
+        fg.handoff("fw-bundle", state, self.a)
+        self.assertFalse(state.get("handoff"))
+        self.assertFalse(self.h.prompts("glm-bundle"))
+        self.assertTrue(self.h.find("pane", "close"))
+
+    def test_later_tripped_windows_extend_both_wake_times(self):
+        self.windows = {"five_hour": (95, self.t + 100)}
+        self.zai = {"short": (95, self.t + 100)}
+        self.step()
+        self.t += 50
+        self.windows["seven_day"] = (95, self.t + 1000)
+        self.zai["long"] = (95, self.t + 2000)
+        self.lp["zai_at"] = 0
+        self.step()
+        self.assertEqual(self.st["wake_at"], self.t + 1000 + self.a.buffer)
+        self.assertEqual(self.st["zai_wake_at"], self.t + 2000 + self.a.buffer)
+        self.t += 200
+        self.step()
+        self.assertTrue(self.st["zai_paused"])
+        self.assertTrue(os.path.exists(fg.FLAG))
+
     def test_failed_close_keeps_agents_paused_and_retries(self):
         self.fleet(commander="working")
         self.trip_claude()
@@ -369,6 +534,30 @@ class LedgerTests(Base):
     def cmd_prompt(self):
         return self.h.prompts("glm-commander")[0]
 
+    def test_failed_autostart_cleanup_is_tracked_and_recovered(self):
+        self.ledger([item("W-1")])
+        wt = os.path.join(self.tmp, "new-lane")
+        os.mkdir(wt)
+        original_worktree = fg.make_lane_worktree
+        fg.make_lane_worktree = lambda a, lane: (wt, "lane/w-1")
+        def fail(*args, **kwargs):
+            if args[:3] == ("agent", "prompt", "glm-w-1") or args[:2] == ("pane", "close"):
+                return {}
+            return self.h(*args, **kwargs)
+        fg.herdr = fail
+        try:
+            self.window()
+            self.assertFalse(self.st["ledger"]["autostarted"])
+            self.assertIn("W-1", self.st["failed_autostarts"])
+            fg.herdr = self.h
+            self.t += 4000
+            self.windows = {}
+            self.step()
+            self.assertNotIn("W-1", self.st.get("failed_autostarts", {}))
+            self.assertTrue(self.h.find("pane", "close"))
+        finally:
+            fg.make_lane_worktree = original_worktree
+
     def test_existing_worktree_requires_matching_repository_and_branch(self):
         wt = os.path.join(os.path.dirname(self.cmd), "lane-w-1")
         os.makedirs(wt)
@@ -548,6 +737,22 @@ class ContextTests(Base):
 
 
 class ResetAndZaiTests(Base):
+    def test_reset_refuses_active_replacements_without_archiving(self):
+        for state in ({"handoff": {"fw-lane": {}}},
+                      {"commander": {"agent": "glm-commander"}},
+                      {"failed_autostarts": {"W-1": {}}},
+                      {"zai_paused": True, "glm_paused": ["glm-lane"]}):
+            with self.subTest(state=state):
+                fg.save_state(state)
+                with open(fg.FLAG, "w") as flag:
+                    flag.write("paused")
+                with self.assertRaisesRegex(ValueError, "cannot reset"):
+                    fg.reset_state()
+                with open(fg.STATE) as saved:
+                    self.assertEqual(json.load(saved), state)
+                self.assertTrue(os.path.exists(fg.FLAG))
+                self.assertFalse(os.path.exists(os.path.join(self.tmp, "archive")))
+
     def test_reset_state_archives(self):
         for p in (fg.STATE, fg.FLAG, fg.EVENTS):
             with open(p, "w") as f:

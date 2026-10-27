@@ -1,39 +1,11 @@
 #!/usr/bin/env python3
-"""Fleet guard v4 (v3 + window ledger): token-free usage watchdog + Claude→GLM handoff for a Herdr fleet.
+"""Optional Claude usage watchdog for a Herdr fleet.
 
-Sources (no model calls):
-  * Claude account windows (five_hour / seven_day) from the per-session statusline
-    snapshots ~/.claude/statusline-snapshots/<session>.json (written by
-    ~/.claude/statusline-command.sh); also every agent's context_window %.
-  * Z.AI windows from https://api.z.ai/api/monitor/usage/quota/limit (key read from
-    ~/.claude_token_zai at call time; never printed or logged).
-
-Behaviour:
-  Claude window >= THRESHOLD  ->  PAUSE every working `fw-*` agent (Esc). Then HAND OFF:
-      FIRST the commander (`--commander-agent`, default fw-commander) to `glm-commander`
-      (split of its pane, cwd = --commander-cwd, protocol in <fleet-dir>/briefs/commander.md),
-      THEN each paused lane to a GLM-5.3 agent `glm-<lane>` in a split of the lane's pane,
-      same worktree; GLM agents commit with a "[glm-handoff]" subject prefix.
-  Z.AI window >= THRESHOLD    ->  PAUSE every working `glm-*` agent until the Z.AI reset,
-      then resume them.
-  Claude window reset         ->  HAND BACK: lanes first, the GLM commander LAST (each commits,
-      logs and exits; its pane is closed); each paused `fw-*` agent resumes with a note to
-      review the GLM commits; the Claude commander gets ONE combined RESUME message (lane
-      summary, integration-branch commit count, "read the GLM commander log", and any
-      glm-* agents the GLM commander started, which are left running).
-  Window ledger (v4)          ->  <commander-cwd>/<fleet-dir>/LEDGER.yaml (read-only for the guard; commanders
-      write it). At a claude->glm handoff: ready+glm-executable+auto-start+unowned `kind: lane` items with a
-      brief are started as GLM lanes (max 2 per window); ready glm-executable commander-task/review/
-      evidence-prep items go in the glm-commander startup message; decisions and providers:[claude] items
-      are never started or offered. RESUME lists ready claude-only items + a ledger delta. Unreadable ledger
-      (no PyYAML, missing/bad file) => logged once, v3 behaviour.
-  Context checkpoints         ->  an `fw-*`/`glm-*` agent whose context window crosses
-      --ctx-threshold gets one "CONTEXT CHECKPOINT" prompt (re-armed after a drop of 30 points).
-
-Deterministic log on stdout + events.jsonl. --dry-run logs herdr mutations instead of
-executing them (for tests).
+Monitoring begins only when this program is invoked. Automatic fallback handoff is disabled
+unless --handoff is supplied. See guard/README.md for supported fallback configuration,
+authorization, quota monitoring and handback behavior.
 """
-import argparse, glob, json, os, shutil, subprocess, sys, time, urllib.request
+import argparse, glob, json, os, shlex, shutil, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
@@ -185,6 +157,8 @@ def fresh_state(old):
 
 def reset_state():
     """Archive state.json, PAUSED and events.jsonl into archive/<YYYY-MM-DD-HHMMSS>/ and start clean."""
+    if has_active_replacements(load_state()):
+        raise ValueError("cannot reset state while GLM handoffs or cleanup are active")
     dest = os.path.join(STATE_DIR, "archive", datetime.fromtimestamp(now()).strftime("%Y-%m-%d-%H%M%S"))
     moved = []
     for p in (STATE, FLAG, EVENTS):
@@ -211,41 +185,49 @@ def set_lead(cwd, role, holder):
     (enforced by ~/.claude/fleet-guard/lead_hook.sh; git-excluded)."""
     if DRY:
         emit("dry-run", cmd=f"lead {cwd} -> {role}:{holder}")
-        return
+        return True
     try:
         p = os.path.join(cwd, ".lane-lead")
         with open(p + ".tmp", "w") as f:
             json.dump({"role": role, "holder": holder, "since": ts()}, f)
         os.replace(p + ".tmp", p)
         emit("LEAD", worktree=os.path.basename(cwd), role=role, holder=holder)
+        return True
     except Exception as e:
         emit("lead-err", worktree=cwd, err=str(e)[:100])
+        return False
 
 
 def start_glm(pane, cwd, name, args, prompt):
     """Split `pane` (cwd = cwd), start a GLM claude agent `name` in it and send `prompt`.
-    Returns (glm_pane, base_commit) or (None, '')."""
+    Returns (pane, base_commit, success, prompted); pane is None if splitting failed."""
     split = herdr("pane", "split", pane, "--direction", "right", "--cwd", cwd, "--no-focus")
     gpane = (split.get("result") or {}).get("pane", {}).get("pane_id") or ("DRY-PANE" if DRY else None)
     if not gpane:
-        return None, ""
-    base = start_in_pane(gpane, cwd, name, args, prompt)
-    return gpane, base
+        return None, "", False, False
+    base, ok, prompted = start_in_pane(gpane, cwd, name, args, prompt)
+    return gpane, base, ok, prompted
 
 
 def start_in_pane(gpane, cwd, name, args, prompt):
-    """Credentials + lead + agent start + prompt in an existing shell pane. Returns the cwd's HEAD."""
+    """Start an agent and prompt it; return (base commit, success, prompt attempted)."""
     # credentials enter the pane's shell from the file; the key never appears in argv or logs
-    herdr("pane", "run", gpane,
-          f'export FLEET_ROLE=glm ANTHROPIC_BASE_URL={ZAI_BASE_URL} ANTHROPIC_AUTH_TOKEN="$(cat {ZAI_TOKEN_FILE})" '
-          f'ANTHROPIC_SMALL_FAST_MODEL={args.glm_model}')
-    set_lead(cwd, "glm", name)
+    configured = herdr("pane", "run", gpane,
+          f'export FLEET_ROLE=glm ANTHROPIC_BASE_URL={shlex.quote(ZAI_BASE_URL)} '
+          f'ANTHROPIC_AUTH_TOKEN="$(cat -- {shlex.quote(ZAI_TOKEN_FILE)})" '
+          f'ANTHROPIC_SMALL_FAST_MODEL={shlex.quote(args.glm_model)}')
+    if "result" not in configured:
+        return "", False, False
     time.sleep(2)
-    herdr("agent", "start", name, "--kind", "claude", "--pane", gpane, "--timeout", "90000", "--",
+    started = herdr("agent", "start", name, "--kind", "claude", "--pane", gpane, "--timeout", "90000", "--",
           "--model", args.glm_model, "--permission-mode", "bypassPermissions", timeout=120)
+    if "result" not in started:
+        return "", False, False
     base = git_head(cwd)
-    herdr("agent", "prompt", name, prompt)
-    return base
+    if not set_lead(cwd, "glm", name):
+        return base, False, False
+    prompted = herdr("agent", "prompt", name, prompt)
+    return base, "result" in prompted, True
 
 
 def glm_name(args, claude_agent):
@@ -274,9 +256,16 @@ def handoff(lane_agent, st, args):
               f"starts with '[glm-handoff] '; you hold the lane lead (.lane-lead) — never edit that file; never merge, rebase, push or touch other worktrees; add a 'GLM handoff log' "
               f"section to the status file describing what you did and anything uncertain. When you receive a message "
               f"starting 'HANDBACK', stop, commit all work, update the log, and reply 'HANDBACK DONE'.")
-    gpane, base = start_glm(pane, cwd, name, args, prompt)
+    gpane, base, ok, prompted = start_glm(pane, cwd, name, args, prompt)
     if not gpane:
         emit("handoff-fail", lane=lane, why="pane split failed")
+        return
+    if not ok:
+        closed = "result" in herdr("pane", "close", gpane)
+        if not closed or not set_lead(cwd, "claude", lane_agent):
+            st.setdefault("handoff", {})[lane_agent] = {"agent": name, "pane": gpane, "cwd": cwd, "base": base, "started_at": now(), "closed": closed, "prompted": prompted}
+            save_state(st)
+        emit("handoff-fail", lane=lane, why="agent start or prompt failed")
         return
     st.setdefault("handoff", {})[lane_agent] = {"agent": name, "pane": gpane, "cwd": cwd, "base": base,
                                                 "started_at": now()}
@@ -306,9 +295,16 @@ def handoff_commander(st, args):
               f"for a usage window. Read {fd}/FLEET.md, {fd}/briefs/commander.md (follow its **GLM commander "
               f"protocol** exactly) and {fd}/COMMANDER.md, then continue. On a message starting 'HANDBACK', follow "
               f"the protocol's handback steps and reply 'HANDBACK DONE'.") + ledger_offer_text(args)
-    gpane, base = start_glm(info.get("pane_id"), args.commander_cwd, name, args, prompt)
+    gpane, base, ok, prompted = start_glm(info.get("pane_id"), args.commander_cwd, name, args, prompt)
     if not gpane:
         emit("handoff-fail", lane="commander", why="pane split failed")
+        return
+    if not ok:
+        closed = "result" in herdr("pane", "close", gpane)
+        if not closed or not set_lead(args.commander_cwd, "claude", cname):
+            st["commander"] = {"agent": name, "pane": gpane, "cwd": args.commander_cwd, "base": base, "started_at": now(), "closed": closed, "failed": True, "prompted": prompted}
+            save_state(st)
+        emit("handoff-fail", lane="commander", why="agent start or prompt failed")
         return
     if cname not in st.get("paused", []):
         st.setdefault("paused", []).append(cname)
@@ -317,10 +313,15 @@ def handoff_commander(st, args):
     emit("HANDOFF", lane="commander", glm_agent=name, pane=gpane, base=base[:9])
 
 
-def close_glm(h, args, zai_paused, message):
+def close_glm(h, args, zai_paused, message, st):
     """Ask the GLM agent to wrap up (unless Z.AI-paused), exit it, close its pane."""
     name = h["agent"]
-    if not zai_paused:
+    if h.get("closed"):
+        return True
+    if h.get("prompted", True):
+        if zai_paused:
+            emit("handback-wait", agent=name, why="provider paused")
+            return False
         prompted = herdr("agent", "prompt", name, message)
         waited = herdr("agent", "wait", name, "--timeout", str(args.handback_timeout * 1000), timeout=args.handback_timeout + 30)
         info = herdr("agent", "get", name, mutate=False)
@@ -328,13 +329,15 @@ def close_glm(h, args, zai_paused, message):
         if "result" not in prompted or "result" not in waited or (not DRY and status not in ("idle", "done")):
             emit("handback-fail", agent=name, why="prompt or wait failed")
             return False
-    herdr("agent", "send-keys", name, "esc")
-    herdr("agent", "prompt", name, "/exit")
-    time.sleep(3)
+        herdr("agent", "send-keys", name, "esc")
+        herdr("agent", "prompt", name, "/exit")
+        time.sleep(3)
     closed = herdr("pane", "close", h["pane"])  # kills the GLM process; only then does the lead move back
     if "result" not in closed:
         emit("handback-fail", agent=name, why="pane close failed")
         return False
+    h["closed"] = True
+    save_state(st)
     return True
 
 
@@ -343,10 +346,11 @@ def handback(st, args, zai_paused):
     summary = st.setdefault("handback_summary", [])
     for lane_agent, h in sorted((st.get("handoff") or {}).items()):
         if not close_glm(h, args, zai_paused, "HANDBACK: the Claude agent is resuming this lane. Stop now: commit all "
-                         "work with the '[glm-handoff] ' prefix, update the GLM handoff log in the status file, reply 'HANDBACK DONE'."):
+                         "work with the '[glm-handoff] ' prefix, update the GLM handoff log in the status file, reply 'HANDBACK DONE'.", st):
             save_state(st)
             return None
-        set_lead(h["cwd"], "claude", lane_agent)
+        if not set_lead(h["cwd"], "claude", lane_agent):
+            return None
         n = commits_since(h["cwd"], h.get("base"))
         summary.append((lane_agent, h, n))
         del st["handoff"][lane_agent]
@@ -362,9 +366,10 @@ def handback_commander(st, args, zai_paused):
         return None
     if not close_glm(c, args, zai_paused, "HANDBACK: the Claude commander is resuming. Follow the handback steps of the GLM "
                      "commander protocol in briefs/commander.md (no half-merged state, commit, final GLM commander log entry), "
-                     "then reply exactly 'HANDBACK DONE'."):
+                     "then reply exactly 'HANDBACK DONE'.", st):
         return False
-    set_lead(c["cwd"], "claude", args.commander_agent)
+    if not set_lead(c["cwd"], "claude", args.commander_agent):
+        return False
     n = commits_since(c["cwd"], c.get("base"))
     emit("HANDBACK", lane="commander", glm_agent=c["agent"], glm_commits=n)
     return c, n
@@ -541,7 +546,7 @@ def make_lane_worktree(a, lane):
 def ledger_autostart(st, a, workspace):
     """Start up to MAX_AUTOSTART eligible ledger lanes as GLM agents. Does NOT write the ledger."""
     lg = st.get("ledger")
-    if not lg or lg.get("unreadable") or lg.get("done") or not st.get("commander"):
+    if not lg or lg.get("unreadable") or lg.get("done") or not st.get("commander") or st["commander"].get("failed"):
         return
     lg["done"] = True
     d, err = load_ledger(a)
@@ -576,7 +581,15 @@ def ledger_autostart(st, a, workspace):
                   f"subject starts with '[glm-handoff] ' and ends with 'Co-Authored-By: GLM-5.3 <noreply@z.ai>'; never "
                   f"merge, rebase, push or touch other worktrees; do not edit LEDGER.yaml (the commander does).{integ} "
                   f"Finish with a final message starting 'LANE DONE:'.")
-        start_in_pane(pane, wt, name, a, prompt)
+        base, ok, prompted = start_in_pane(pane, wt, name, a, prompt)
+        if not ok:
+            closed = "result" in herdr("pane", "close", pane)
+            if not closed or not set_lead(wt, "claude", a.prefix + lane):
+                st.setdefault("failed_autostarts", {})[iid] = {"agent": name, "pane": pane, "cwd": wt, "base": base, "lane": lane, "closed": closed, "prompted": prompted}
+                save_state(st)
+                emit("autostart-fail", item=iid, why="failed start pane could not close; recovery pending")
+            emit("autostart-fail", item=iid, why="agent start or prompt failed")
+            continue
         lg["autostarted"][iid] = name
         lg["count"] += 1
         emit("AUTOSTART", item=iid, glm_agent=name, branch=branch, worktree=os.path.basename(wt), pane=pane)
@@ -647,6 +660,17 @@ def load_models():
 
 # --- main loop -----------------------------------------------------------------------
 
+def has_active_replacements(st):
+    return bool(st.get("handoff") or (st.get("commander") or {}).get("agent")
+                or st.get("failed_autostarts") or (st.get("zai_paused") and st.get("glm_paused")))
+
+
+def validate_recovery(st, args):
+    """Require quota monitoring while recovering replacements from an earlier run."""
+    if has_active_replacements(st) and args.no_handoff:
+        raise ValueError("saved GLM handoffs require --handoff to resume with Z.AI quota monitoring")
+
+
 def new_loop():
     return {"last": None, "last_zai": None, "zai_at": 0, "zai": {}}
 
@@ -654,8 +678,10 @@ def new_loop():
 def step(st, a, lp):
     """One iteration of the guard loop. Returns (state, seconds_to_sleep)."""
     windows, mtime, ctx, contexts = claude_usage(a.commander_session)
-    if now() - lp["zai_at"] >= a.zai_interval:
+    if not a.no_handoff and now() - lp["zai_at"] >= a.zai_interval:
         lp["zai"], lp["zai_at"] = zai_usage(), now()
+    elif a.no_handoff:
+        lp["zai"] = {}
     zai = lp["zai"]
     sample = (tuple(sorted(windows.items())), ctx)
     if sample != lp["last"]:
@@ -670,8 +696,11 @@ def step(st, a, lp):
 
     # ---- Z.AI side: pause / resume GLM agents ----------------------------------------
     zwin = {k: v for k, v in zai.items() if k != "error"}
+    zt = tripped(zwin, a.zai_threshold)
+    if st.get("zai_paused") and zt and zt[1] + a.buffer > st.get("zai_wake_at", 0):
+        st["zai_wake_at"] = zt[1] + a.buffer
+        save_state(st)
     if not st.get("zai_paused"):
-        zt = tripped(zwin, a.zai_threshold)
         if zt:
             st.update(zai_paused=True, zai_wake_at=zt[1] + a.buffer, glm_paused=pause_working(a.glm_prefix))
             save_state(st)
@@ -709,6 +738,10 @@ def step(st, a, lp):
                  wake_at=ts(st["wake_at"]))
         return st, a.interval
 
+    trip = tripped(windows, a.threshold) if mtime is not None and mtime > st.get("resumed_at", 0) else None
+    if trip and trip[1] + a.buffer > st.get("wake_at", 0):
+        st.update(window=trip[0], pct=trip[2], wake_at=trip[1] + a.buffer)
+        save_state(st)
     if now() < st.get("wake_at", 0):
         hit = pause_working(a.prefix)
         if hit:
@@ -738,6 +771,14 @@ def step(st, a, lp):
 
     # ---- Claude window reset: hand back (lanes, then commander), resume ------------------
     zp = st.get("zai_paused", False)
+    for iid, h in list(st.get("failed_autostarts", {}).items()):
+        if not close_glm(h, a, zp, "HANDBACK: stop and commit any work, then reply HANDBACK DONE.", st):
+            return st, a.interval
+        if not set_lead(h["cwd"], "claude", a.prefix + h["lane"]):
+            return st, a.interval
+        del st["failed_autostarts"][iid]
+        save_state(st)
+        emit("autostart-cleanup", item=iid, agent=h["agent"])
     summary = handback(st, a, zp)
     if summary is None:
         return st, a.interval
@@ -798,7 +839,10 @@ def build_parser():
     ap.add_argument("--handback-timeout", type=int, default=600)
     ap.add_argument("--state-dir", default="", help="override state/log dir (tests, dry runs)")
     ap.add_argument("--reset-state", action="store_true", help="archive state.json/PAUSED/events.jsonl and start clean")
-    ap.add_argument("--no-handoff", action="store_true")
+    handoff = ap.add_mutually_exclusive_group()
+    handoff.add_argument("--handoff", dest="no_handoff", action="store_false", help="opt in to automatic fallback handoff")
+    handoff.add_argument("--no-handoff", dest="no_handoff", action="store_true", help="disable automatic handoff (default)")
+    ap.set_defaults(no_handoff=True)
     ap.add_argument("--dry-run", action="store_true")
     return ap
 
@@ -814,10 +858,17 @@ def main():
         set_state_dir(os.path.abspath(a.state_dir))
     os.makedirs(STATE_DIR, exist_ok=True)
     if a.reset_state:
-        dest, moved = reset_state()
+        try:
+            dest, moved = reset_state()
+        except ValueError as e:
+            ap.error(str(e))
         emit("reset", archived=",".join(moved) or "-", to=dest)
 
     st = load_state()
+    try:
+        validate_recovery(st, a)
+    except ValueError as e:
+        ap.error(str(e))
     if os.path.exists(FLAG) and st.get("wake_at"):
         emit("restore", paused=",".join(st.get("paused", [])), wake_at=ts(st["wake_at"]),
              handoffs=",".join((st.get("handoff") or {}).keys()) or "-")

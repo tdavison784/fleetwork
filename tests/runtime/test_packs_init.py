@@ -83,6 +83,35 @@ def test_yaml_variables_remain_scalars_and_preserve_numeric_settings(tmp_path):
             assert profile["context-checkpoint"] == 75
 
 
+def test_yaml_render_preserves_quoted_scalars_and_anchor_aliases():
+    template = (
+        'quoted: "{{name}}"\n'
+        "single_quoted: '{{name}}'\n"
+        'anchored: &shared {{name}}\n'
+        'alias: *shared\n'
+        'tagged_first: !!str &tagged_first {{name}}\n'
+        'tagged_first_alias: *tagged_first\n'
+        'anchor_first: &anchor_first !!str {{name}}\n'
+        'anchor_first_alias: *anchor_first\n'
+    )
+    value = 'Ada "A": [x]'
+
+    rendered, missing = init.render_yaml(template, {"name": value}, "test:template.yaml")
+
+    assert missing == []
+    document = yaml.safe_load(rendered)
+    assert document == {
+        "quoted": value,
+        "single_quoted": value,
+        "anchored": value,
+        "alias": value,
+        "tagged_first": value,
+        "tagged_first_alias": value,
+        "anchor_first": value,
+        "anchor_first_alias": value,
+    }
+
+
 def test_invalid_yaml_numeric_variable_aborts_before_writing(tmp_path):
     ps = packs.resolve(["core"])
     variables = init.variables_for(ps, "demo", "goal", {**VARS, "lane_limit": "2, extra: true"})

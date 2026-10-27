@@ -1,10 +1,11 @@
 # fleetwork
 
 A method for running a fleet of coding agents against one goal: a commander session, one agent per lane in its
-own worktree, a work ledger that says who may do what, a guard that hands work between model providers as
-their usage windows fill, and an experiment kit for when the fleet's job is to measure something rather than
-build it. It was worked out over four fleet phases of a pilot project and is being extracted here so it can
-be reused on any repository.
+own worktree, and a work ledger that says who may do what. The ledger core is designed to stay provider-neutral.
+An optional guard can hand work between supported model providers as their usage windows fill; it runs only
+when explicitly invoked with `fleet guard`. An experiment kit is also available for when the fleet's job is to
+measure something rather than build it. The method was worked out over four fleet phases of a pilot project and
+is being extracted here so it can be reused on any repository.
 
 The **ledger** is the core. Everything else wraps around it.
 
@@ -25,7 +26,7 @@ Start with `AGENTS.md` (how to work here), then `docs/ARCHITECTURE.md` (where ev
 | `src/fleetwork/runtime/` | L3: packs and `fleet init` (working), `fleet guard` (runs the v4 guard), lane lifecycle stubs | Skeleton |
 | `packs/` | `core`, `git`, `providers`, `eval-integrity`: templates, profiles, rules and config tables per kind of use case | Working |
 | `examples/` | `.fleet.toml` for go-rcana (portability test) and a two-provider sealed-evaluation fleet | Working |
-| `guard/` | Fleet guard v4: provider usage windows, handoff and handback, context checkpoints, ledger auto-start. Herdr-based | Working; command-line defaults until WP-06 |
+| `guard/` | Optional fleet guard v4: provider usage windows, handoff and handback, context checkpoints, ledger auto-start. Herdr-based | Working; explicit `fleet guard` invocation; command-line defaults until WP-06 |
 | `tools/ledger-to-beads.py` | One-way mirror of a v1 ledger into beads | Working; ported in WP-12 |
 | `tests/` | Kit tests, including `test_architecture.py`, which keeps the core generic and the layers pointing down | — |
 

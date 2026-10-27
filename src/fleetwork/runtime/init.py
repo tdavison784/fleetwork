@@ -66,7 +66,17 @@ def render_yaml(text, variables, source):
                     encoded = str(int(value))
                 else:
                     encoded = json.dumps(value, ensure_ascii=True)
-                replacements.append((node.start_mark.index, node.end_mark.index, encoded))
+                start, end = node.start_mark.index, node.end_mark.index
+                source_text = masked[start:end]
+                # PyYAML includes node properties in the scalar's source marks.
+                # Keep tags and anchors in either order when replacing the
+                # scalar, or aliases later in the document become undefined.
+                properties = re.match(
+                    r"((?:(?:&[^\s]+|!(?:<[^>]+>|[^\s]+))\s+)+)", source_text
+                )
+                if properties:
+                    encoded = properties.group(1) + encoded
+                replacements.append((start, end, encoded))
             elif isinstance(node, yaml.SequenceNode):
                 for child in node.value:
                     visit(child)

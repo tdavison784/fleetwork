@@ -27,10 +27,17 @@ class _Record:
     _nested = {}   # attr -> class with from_dict/to_dict, or (list, class)
     _always = ()   # attrs always written by to_dict
 
+    def __setattr__(self, name, value):
+        # An explicit replacement supersedes the null originally read from disk.
+        null_nested = self.__dict__.get("_null_nested")
+        if null_nested is not None:
+            null_nested.discard(name)
+        object.__setattr__(self, name, value)
+
     @classmethod
     def from_dict(cls, d):
         d = dict(d or {})
-        kw, extra = {}, {}
+        kw, extra, null_nested = {}, {}, set()
         names = {_key(f.name): f.name for f in fields(cls) if f.name != "extra"}
         for k, v in d.items():
             attr = names.get(k)
@@ -38,7 +45,11 @@ class _Record:
                 extra[k] = v
                 continue
             nested = cls._nested.get(attr)
-            if isinstance(nested, tuple):
+            if nested is not None and v is None:
+                # Keep the convenient empty object/list while remembering the original null.
+                null_nested.add(attr)
+                v = [] if isinstance(nested, tuple) else nested()
+            elif isinstance(nested, tuple):
                 v = [nested[1].from_dict(x) for x in (v or [])]
             elif nested is not None:
                 v = nested.from_dict(v)
@@ -46,6 +57,7 @@ class _Record:
         obj = cls(**kw)
         obj.extra = extra
         obj._present = set(kw)
+        obj._null_nested = null_nested
         return obj
 
     def to_dict(self):
@@ -56,10 +68,14 @@ class _Record:
                 continue
             v = getattr(self, f.name)
             nested = self._nested.get(f.name)
-            if isinstance(nested, tuple):
+            if v is None:
+                pass
+            elif isinstance(nested, tuple):
                 v = [x.to_dict() for x in v]
             elif nested is not None:
                 v = v.to_dict()
+            if f.name in getattr(self, "_null_nested", set()) and v == _default(f):
+                v = None
             if f.name not in present and f.name not in self._always and v in (None, [], {}, _default(f)):
                 continue
             out[_key(f.name)] = v
@@ -91,11 +107,14 @@ class Gate(_Record):
     @classmethod
     def from_dict(cls, d):
         d = dict(d or {})
-        return cls(type=d.pop("type", ""), closed_by=d.pop("closed-by", None), spec=d)
+        present = "closed-by" in d
+        obj = cls(type=d.pop("type", ""), closed_by=d.pop("closed-by", None), spec=d)
+        obj._closed_by_present = present
+        return obj
 
     def to_dict(self):
         out = {"type": self.type, **self.spec}
-        if self.closed_by:
+        if self.closed_by is not None or getattr(self, "_closed_by_present", False):
             out["closed-by"] = self.closed_by
         return out
 

@@ -1,50 +1,27 @@
-# Fleet guard v3
+# Fleet guard
 
-Token-free watchdog for a Herdr fleet (no model calls). Reads Claude usage from statusline snapshots
-(`~/.claude/statusline-snapshots/*.json`) and Z.AI usage from the quota API (key in `~/.claude_token_zai`,
-never printed). Files: `fleet_guard.py`, `lead_hook.sh` (lane-lead PreToolUse hook), `models.txt`
-(relaunch model map), `state.json`, `PAUSED`, `events.jsonl`, `archive/`, `fleet_guard.v2.py` (rollback).
+The guard is optional and starts only when invoked with `fleet guard` or `python3 guard/fleet_guard.py`.
+It monitors Claude Code statusline snapshots and pauses the configured Herdr agents when a Claude
+window reaches the threshold. Automatic handoff is **off by default**: without `--handoff` the guard
+neither reads the Z.AI key nor calls its quota API. Context checkpoints and resumption still run.
 
-## What it does
-1. **Claude window ≥ `--threshold` (90 %)**: Esc every *working* `fw-*` agent (`PAUSE`), then hand off:
-   **first** the commander (`fw-commander` → `glm-commander`, split of its pane, `--cwd <commander-cwd>`,
-   `.lane-lead` there set to `glm`, prompt = follow `<fleet-dir>/briefs/commander.md` GLM protocol),
-   **then** each paused lane (`fw-<lane>` → `glm-<lane>`, same worktree). The commander is handed off
-   even if it is idle (it usually is while lanes work); a still-working one waits (`handoff-wait`).
-   Commander not found ⇒ `handoff-skip`, lanes proceed (v2 behaviour).
-2. **Z.AI window ≥ `--zai-threshold`**: pause working `glm-*` agents until the Z.AI reset.
-3. **Claude reset** (`wake_at` = reset + `--buffer`): hand back **lanes first, commander last**
-   (`HANDBACK` → wait → `/exit` → close pane → lead back to `claude`), relaunch agents that had to be
-   ended (`models.txt`), resume each `fw-*` lane with a GLM-commit review note, and send the Claude
-   commander ONE combined RESUME (lane summary, commits on the integration branch since the handoff base,
-   "read the GLM commander log in COMMANDER.md and review GLM merges", plus any `glm-*` agents the guard
-   did not start, which are listed and **not** closed).
-4. **Context checkpoints**: every live `fw-*`/`glm-*` agent's session (`agent_session.value`) is matched to
-   its snapshot `context_window.used_percentage` (snapshots >1 h old ignored). At ≥ `--ctx-threshold` (80)
-   it gets one `CONTEXT CHECKPOINT (fleet guard)…` prompt (event `CTX`); re-armed after it drops below
-   threshold−30 (compaction). Not sent to agents the guard has paused. State persisted in `state.json`.
+To opt into the existing GLM fallback, supply `--handoff --commander-cwd <worktree>`. This uses the
+Z.AI quota API and `~/.claude_token_zai`; the guard reads the key when polling quota, and the fallback
+pane reads it when starting. The guard hands off the commander and paused lanes, then hands them back
+when the Claude window resets. It waits for the fallback quota window before handback and extends wake
+times when a later window crosses its threshold. Failed starts and lead restoration are tracked for retry.
 
-## Flags
-`--commander-agent` (fw-commander) · `--commander-cwd` (integration worktree; required unless `--no-handoff`) ·
-`--fleet-dir` (fleet; relative to each agent's worktree) · `--commander-session` (optional,
-only for the commander ctx % in the log) · `--prefix fw-` · `--glm-prefix glm-` · `--glm-model glm-5.3` ·
-`--threshold 90` · `--zai-threshold 90` · `--ctx-threshold 80` · `--interval 30` · `--zai-interval 120` ·
-`--buffer 90` · `--handback-timeout 600` · `--state-dir` (override state/log dir) · `--reset-state` (archive
-`state.json`, `PAUSED`, `events.jsonl` to `archive/<YYYY-MM-DD-HHMMSS>/`, start clean) · `--no-handoff` ·
-`--dry-run` (log herdr mutations instead of running them). `--commander-pane` is accepted and ignored (v2).
-
-## Start (first real start; run in herdr tab `fw-guard`)
+```sh
+python3 guard/fleet_guard.py --handoff --commander-cwd /path/to/worktree
 ```
-cd ~/.claude/fleet-guard && python3 fleet_guard.py --reset-state \
-  --commander-cwd <path to the commander worktree>
-```
-Drop `--reset-state` on restarts (state is restored). Stop: Ctrl+C in that tab (logs `stop`). If stopped
-mid-window, a restart with `PAUSED` + `state.json` present resumes the window (`restore`).
-The commander adds new lanes with `echo "fw-<lane> <model>" >> ~/.claude/fleet-guard/models.txt`.
 
-## Test
-`python3 -m unittest -v test_fleet_guard` (no network, no real herdr). Smoke:
-`python3 fleet_guard.py --dry-run --interval 2 --state-dir $(mktemp -d) --commander-cwd <wt>` for a few seconds.
+This implementation supports the existing Claude-to-GLM handoff. Generalizing the guard to other
+providers is planned separately; the provider adapter interfaces are not implemented yet.
 
-## Rollback
-The pre-ledger v3 behaviour is what you get when the ledger is unreadable (logged once); there is no separate rollback file.
+Other options include `--prefix`, `--glm-prefix`, `--glm-model`, `--threshold`, `--zai-threshold`,
+`--ctx-threshold`, `--interval`, `--zai-interval`, `--buffer`, `--handback-timeout`, `--state-dir`,
+`--reset-state` and `--dry-run`; use `--help` for defaults. Do not reset state when restarting a paused
+guard; pass `--handoff` again when resuming an active GLM handoff so Z.AI quota monitoring is enabled.
+State includes handoff progress so cleanup and lead restoration can be retried before agents resume.
+
+Tests use fakes and need no network or real Herdr: `python3 -m unittest guard/test_fleet_guard.py`.

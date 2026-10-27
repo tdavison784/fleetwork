@@ -11,7 +11,7 @@ What exists today, where it came from, and the order to extract it. The ledger d
 | Written rules every lane follows: ownership, commits, status files, finishing with `LANE DONE:`, cleanup, only the commander merges | The pilot's `FLEET.md` | ~70%; the rest is project-specific (language, framework) rules that belong in the project's own addendum |
 | Lane instructions: a shared preamble plus one brief per lane | The pilot's `briefs/` | Yes, as templates |
 | Work ledger: items, provider authorization, auto-start, decision items, provenance | The pilot's two v1 `LEDGER.yaml` files (`tests/fixtures/v1/`, neutralised) | Yes; v2 in `LEDGER-DESIGN.md` |
-| Fleet guard: usage windows, provider handoff and handback, context checkpoints, ledger auto-start | `guard/` here | Yes, once prefixes and paths are config |
+| Optional fleet guard: usage windows, provider handoff and handback, context checkpoints, ledger auto-start | `guard/` here | v4 pilot implementation; v5 config wiring remains in WP-06 |
 | Commander state doc and memory notes for resuming after a context reset | `COMMANDER.md` per fleet | Yes, as templates |
 | Experiment-integrity kit: pre-registered protocol (amendments only appended), sealed answer files, isolated runs of the agent under test, a canary that proves the isolation, scoring that checks every quote against the text | The pilot's `PROTOCOL.md` and harness scripts | Yes; the unusual part |
 | Hard lessons: never answer trust dialogs, `DO_NOT_TRACK` before third-party CLIs, `rm "${VAR:?}"`, bash 3.2, long jobs under nohup not a watcher, wait on branch tip + agent state not screen text | memory and commander notes | They belong in code, not prose |
@@ -23,7 +23,10 @@ What exists today, where it came from, and the order to extract it. The ledger d
 - `fleet lane start <lane>`: worktree, branch, pane, named agent, brief sent; always `DO_NOT_TRACK`, never answers a trust dialog.
 - `fleet watch <lane>`: waits on branch tip moved + agent idle/done.
 - `fleet merge <lane>`: one transaction: done signal and status file present, diff inside ownership and off frozen paths, project tests pass, `merge` per project policy (`squash` at work, `no-ff` where lane commits must stay reviewable), close pane, remove worktree, `branch -d`, `ledger close`. Re-runnable.
-- `fleet guard`: today's guard with provider, prefix and fleet dir from config.
+- `fleet guard`: optional usage-window guard, started only by explicitly running this command. The current v4
+  still uses pilot command-line defaults; WP-06 makes prefixes and paths configurable. The ledger core is
+  designed to remain provider-neutral, while provider integrations are implemented separately and may be
+  incomplete.
 - `ledger …`: the commands in `LEDGER-DESIGN.md` §6.
 
 **Per-project `fleet.toml`**, the only file a new repository writes: integration branch and lane prefix; build

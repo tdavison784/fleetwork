@@ -1,6 +1,7 @@
 import yaml
+import pytest
 
-from fleetwork.ledger.model import Gate, Item, Ledger
+from fleetwork.ledger.model import Budget, Gate, Guard, Item, Ledger, Run
 
 
 def test_round_trip_keeps_every_key(v2_ledger, kit_root):
@@ -20,6 +21,42 @@ def test_gate_keeps_type_specific_keys():
     g = Gate.from_dict({"type": "window", "provider": "p1", "headroom": "30%"})
     assert g.type == "window" and g.spec == {"provider": "p1", "headroom": "30%"} and not g.closed
     assert Gate.from_dict(g.to_dict()) == g
+
+
+@pytest.mark.parametrize("name", ["run", "guard", "budget", "gates"])
+def test_nested_null_round_trips_and_defaults_remain_usable(name):
+    raw = {"id": "X-1", "title": "t", "kind": "task", "status": "open", name: None}
+    item = Item.from_dict(raw)
+    assert item.to_dict() == raw
+    if name == "gates":
+        item.gates.append(Gate(type="human"))
+        assert item.to_dict()[name] == [{"type": "human"}]
+    else:
+        obj = getattr(item, name)
+        field, value = {"run": ("profile", "builder"), "guard": ("note", "test"),
+                        "budget": ("estimate", {"p": 1})}[name]
+        setattr(obj, field, value)
+        assert item.to_dict()[name] == {field: value}
+
+
+@pytest.mark.parametrize("name,empty", [("run", Run), ("guard", Guard),
+                                      ("budget", Budget), ("gates", list)])
+def test_replacing_nested_null_with_empty_value(name, empty):
+    raw = {"id": "X-1", "title": "t", "kind": "task", "status": "open", name: None}
+    item = Item.from_dict(raw)
+    setattr(item, name, empty())
+    assert item.to_dict()[name] == ([] if name == "gates" else {})
+    setattr(item, name, None)
+    assert item.to_dict()[name] is None
+
+
+@pytest.mark.parametrize("value", [None, {}, {"actor": "owner"}])
+def test_gate_preserves_explicit_closed_by(value):
+    raw = {"type": "human", "closed-by": value}
+    gate = Gate.from_dict(raw)
+    assert gate.to_dict() == raw
+    assert gate.closed == bool(value)
+    assert Gate.from_dict({"type": "human"}).to_dict() == {"type": "human"}
 
 
 def test_defaults_are_open_tasks():
