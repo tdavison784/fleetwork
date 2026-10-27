@@ -1,0 +1,305 @@
+"""End-to-end storage contract tests through the shipped CLIs."""
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+
+import pytest
+import yaml
+
+from fleetwork.errors import ConfigError, VersionConflict
+from fleetwork.ledger import history, index, store, view
+from fleetwork.ledger.model import HistoryEntry
+
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def run_module(module, *args, cwd=None):
+    env = {**os.environ, "PYTHONPATH": os.path.join(ROOT, "src")}
+    return subprocess.run(
+        [sys.executable, "-m", module, *map(str, args)],
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def fleet_init(ledger_dir):
+    return run_module(
+        "fleetwork.runtime.cli",
+        "init",
+        "--dir",
+        ledger_dir,
+        "--packs",
+        "core",
+        "--var",
+        "owner=owner",
+        "--var",
+        "provider=local",
+        "--var",
+        "runtime=headless",
+        "--var",
+        "model=test-model",
+    )
+
+
+def ledger(ledger_dir, *args):
+    return run_module("fleetwork.ledger.cli", "--ledger", ledger_dir, *args)
+
+
+def apply(ledger_dir, source, actor="owner"):
+    return ledger(ledger_dir, "apply", source, "--actor", actor)
+
+
+def make_ledger(tmp_path):
+    ledger_dir = tmp_path / "store" / "demo"
+    initialized = fleet_init(ledger_dir)
+    assert initialized.returncode == 0, initialized.stderr
+    seeded = apply(ledger_dir, ledger_dir / "seed.yaml")
+    assert seeded.returncode == 0, seeded.stderr
+    return ledger_dir
+
+
+def write_batch(path, batch):
+    path.write_text(yaml.safe_dump(batch, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_init_apply_and_rebuild_reproduce_index_and_view(tmp_path):
+    ledger_dir = tmp_path / "store" / "demo"
+    initialized = fleet_init(ledger_dir)
+    assert initialized.returncode == 0, initialized.stderr
+    assert (ledger_dir / "seed.yaml").is_file()
+
+    seeded = apply(ledger_dir, ledger_dir / "seed.yaml")
+    assert seeded.returncode == 0, seeded.stderr
+    for name in ("history.jsonl", "ledger.db", "LEDGER.yaml"):
+        assert (ledger_dir / name).is_file()
+
+    history_before = (ledger_dir / "history.jsonl").read_bytes()
+    index_before = (ledger_dir / "ledger.db").read_bytes()
+    view_before = (ledger_dir / "LEDGER.yaml").read_bytes()
+    assert view_before.decode("utf-8").splitlines()[0] == "# GENERATED from history.jsonl by `ledger` — do not edit; author changes with `ledger apply`."
+
+    applied_again = apply(ledger_dir, ledger_dir / "seed.yaml")
+    assert applied_again.returncode == 0, applied_again.stderr
+    assert (ledger_dir / "history.jsonl").read_bytes() == history_before
+    assert (ledger_dir / "ledger.db").read_bytes() == index_before
+    assert (ledger_dir / "LEDGER.yaml").read_bytes() == view_before
+
+    rebuilt = ledger(ledger_dir, "rebuild")
+    assert rebuilt.returncode == 0, rebuilt.stderr
+    assert (ledger_dir / "history.jsonl").read_bytes() == history_before
+    assert (ledger_dir / "ledger.db").read_bytes() == index_before
+    assert (ledger_dir / "LEDGER.yaml").read_bytes() == view_before
+
+
+def test_apply_edits_items_and_rebuild_discards_hand_edits_to_view(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    first = write_batch(
+        tmp_path / "first.yaml",
+        {"items": [{"id": "W-9001", "title": "Before", "kind": "task", "note": "keep?"}]},
+    )
+    result = apply(ledger_dir, first)
+    assert result.returncode == 0, result.stderr
+
+    edit = write_batch(
+        tmp_path / "edit.yaml",
+        {"items": [{"id": "W-9001", "title": "After", "note": None}]},
+    )
+    result = apply(ledger_dir, edit)
+    assert result.returncode == 0, result.stderr
+    history_after_edit = (ledger_dir / "history.jsonl").read_bytes()
+    replayed = apply(ledger_dir, edit)
+    assert replayed.returncode == 0, replayed.stderr
+    assert (ledger_dir / "history.jsonl").read_bytes() == history_after_edit
+
+    current = yaml.safe_load((ledger_dir / "LEDGER.yaml").read_text(encoding="utf-8"))
+    item = next(item for item in current["items"] if item["id"] == "W-9001")
+    assert item["title"] == "After"
+    assert "note" not in item
+
+    (ledger_dir / "LEDGER.yaml").write_text("items: []\n", encoding="utf-8")
+    rebuilt = ledger(ledger_dir, "rebuild")
+    assert rebuilt.returncode == 0, rebuilt.stderr
+    regenerated = (ledger_dir / "LEDGER.yaml").read_text(encoding="utf-8")
+    assert regenerated.startswith("# GENERATED from history.jsonl")
+    state = yaml.safe_load(regenerated)
+    assert any(item["id"] == "W-9001" and item["title"] == "After" for item in state["items"])
+
+
+def test_stale_history_writer_gets_version_conflict(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    entries = history.read(ledger_dir)
+    expected_v = len(entries)
+    current = HistoryEntry(
+        expected_v + 1,
+        "2026-01-01T00:00:00Z",
+        "owner",
+        "edit",
+        "W-0001",
+        {"note": "first writer"},
+    )
+    stale = HistoryEntry(
+        expected_v + 1,
+        "2026-01-01T00:00:01Z",
+        "owner",
+        "edit",
+        "W-0001",
+        {"note": "stale writer"},
+    )
+    history.append(ledger_dir, current, expected_v)
+    after_first = (ledger_dir / "history.jsonl").read_bytes()
+    with pytest.raises(VersionConflict):
+        history.append(ledger_dir, stale, expected_v)
+    assert (ledger_dir / "history.jsonl").read_bytes() == after_first
+
+
+def test_apply_rejects_status_edits_and_non_owner_header_changes(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    status_edit = write_batch(
+        tmp_path / "status.yaml",
+        {"items": [{"id": "W-0001", "status": "done"}]},
+    )
+    before_history = (ledger_dir / "history.jsonl").read_bytes()
+    refused = apply(ledger_dir, status_edit)
+    assert refused.returncode != 0
+    assert (ledger_dir / "history.jsonl").read_bytes() == before_history
+
+    header_edit = write_batch(tmp_path / "header.yaml", {"header": {"never": ["push", "sneak"]}})
+    refused = apply(ledger_dir, header_edit, actor="unrecognized")
+    assert refused.returncode != 0
+    assert (ledger_dir / "history.jsonl").read_bytes() == before_history
+
+
+def test_apply_refuses_to_remove_the_last_owner(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    batch = write_batch(
+        tmp_path / "remove-owner.yaml",
+        {"header": {"roles": {"owner": {"actors": []}}}},
+    )
+    before_history = (ledger_dir / "history.jsonl").read_bytes()
+    before_index = (ledger_dir / "ledger.db").read_bytes()
+    before_view = (ledger_dir / "LEDGER.yaml").read_bytes()
+
+    refused = apply(ledger_dir, batch)
+    assert refused.returncode != 0
+    assert (ledger_dir / "history.jsonl").read_bytes() == before_history
+    assert (ledger_dir / "ledger.db").read_bytes() == before_index
+    assert (ledger_dir / "LEDGER.yaml").read_bytes() == before_view
+
+
+def test_commit_refuses_to_remove_the_last_owner(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    before = (ledger_dir / "history.jsonl").read_bytes()
+    with pytest.raises(ConfigError, match="retain at least one owner"):
+        store.commit(ledger_dir, "owner", "header", None, {"roles": None})
+    assert (ledger_dir / "history.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("actors", [[None], [""], ["  "], ["owner", None], "owner"])
+def test_header_rejects_malformed_owner_actors(tmp_path, actors):
+    ledger_dir = make_ledger(tmp_path)
+    before = (ledger_dir / "history.jsonl").read_bytes()
+    batch = write_batch(tmp_path / "invalid-owner.yaml", {"header": {"roles": {"owner": {"actors": actors}}}})
+    assert apply(ledger_dir, batch).returncode != 0
+    with pytest.raises(ConfigError, match="owner actors must be nonempty strings"):
+        store.commit(ledger_dir, "owner", "header", None, {"roles": {"owner": {"actors": actors}}})
+    assert (ledger_dir / "history.jsonl").read_bytes() == before
+
+
+def test_invalid_later_entry_does_not_partially_apply_batch(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    batch = write_batch(
+        tmp_path / "mixed.yaml",
+        {
+            "items": [
+                {"id": "W-9010", "title": "Would be valid", "kind": "task"},
+                {"id": "W-0001", "status": "done"},
+            ]
+        },
+    )
+    old_history = (ledger_dir / "history.jsonl").read_bytes()
+    old_index = (ledger_dir / "ledger.db").read_bytes()
+    old_view = (ledger_dir / "LEDGER.yaml").read_bytes()
+
+    refused = apply(ledger_dir, batch)
+    assert refused.returncode != 0
+    assert (ledger_dir / "history.jsonl").read_bytes() == old_history
+    assert (ledger_dir / "ledger.db").read_bytes() == old_index
+    assert (ledger_dir / "LEDGER.yaml").read_bytes() == old_view
+    assert not any(
+        item.get("id") == "W-9010"
+        for item in yaml.safe_load((ledger_dir / "LEDGER.yaml").read_text(encoding="utf-8"))["items"]
+    )
+
+
+def test_apply_checks_authority_after_header_change(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    batch = write_batch(
+        tmp_path / "transfer.yaml",
+        {"header": {"roles": {"owner": {"actors": ["other"]}}},
+         "items": [{"id": "W-9010", "title": "Unauthorized after transfer"}]},
+    )
+    before = (ledger_dir / "history.jsonl").read_bytes()
+    refused = apply(ledger_dir, batch)
+    assert refused.returncode != 0
+    assert (ledger_dir / "history.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("failed_module,method", [(index, "_rebuild"), (view, "write")])
+@pytest.mark.parametrize("operation", ["apply", "commit"])
+def test_refresh_failure_reports_committed_history(tmp_path, monkeypatch, failed_module, method, operation):
+    ledger_dir = make_ledger(tmp_path)
+    old_version = len(history.read(ledger_dir))
+    batch = {"items": [{"id": "W-9010", "title": "Committed"}]}
+
+    def fail(*args, **kwargs):
+        raise OSError("injected refresh failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(failed_module, method, fail)
+        with pytest.raises(ConfigError, match=f"history committed through version {old_version + 1}.*ledger rebuild"):
+            if operation == "apply":
+                store.apply(ledger_dir, batch, "owner")
+            else:
+                store.commit(ledger_dir, "owner", "add", "W-9010", batch["items"][0])
+    assert len(history.read(ledger_dir)) == old_version + 1
+    store.rebuild(ledger_dir)
+    assert store.load(ledger_dir).item("W-9010").title == "Committed"
+    assert store.apply(ledger_dir, batch, "owner") == []
+    assert len(history.read(ledger_dir)) == old_version + 1
+
+
+def test_load_repairs_corrupt_cache_even_when_cached_version_matches_log(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    with sqlite3.connect(ledger_dir / "ledger.db") as db:
+        version = db.execute("SELECT version FROM metadata").fetchone()[0]
+        db.execute("UPDATE state SET data = ?", ('{"header":{"ledger":"tampered"},"items":[]}',))
+    assert version == len(history.read(ledger_dir))
+    with sqlite3.connect(ledger_dir / "ledger.db") as db:
+        assert db.execute("SELECT version FROM metadata").fetchone()[0] == version
+        assert "tampered" in db.execute("SELECT data FROM state").fetchone()[0]
+
+    repaired = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from fleetwork.ledger import store; store.load(sys.argv[1])",
+            str(ledger_dir),
+        ],
+        env={**os.environ, "PYTHONPATH": os.path.join(ROOT, "src")},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert repaired.returncode == 0, repaired.stderr
+    with sqlite3.connect(ledger_dir / "ledger.db") as db:
+        assert db.execute("SELECT version FROM metadata").fetchone()[0] == version
+        state = json.loads(db.execute("SELECT data FROM state").fetchone()[0])
+    assert state["ledger"] == "demo"
+    assert state["items"][0]["id"] == "W-0001"
