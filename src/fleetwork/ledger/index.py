@@ -24,7 +24,13 @@ def rebuild(ledger_dir, entries=None):
     cache untouched.
     """
     directory = Path(ledger_dir)
-    entries = list(history.read(directory) if entries is None else entries)
+    if entries is None:
+        with history.transaction(directory) as tx:
+            return _rebuild(directory, tx.read())
+    return _rebuild(directory, list(entries))
+
+
+def _rebuild(directory, entries):
     ledger = history.replay(entries)
     directory.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".ledger-db-", dir=directory)

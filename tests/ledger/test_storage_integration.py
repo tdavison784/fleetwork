@@ -1,6 +1,7 @@
 """End-to-end storage contract tests through the shipped CLIs."""
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 
@@ -84,6 +85,12 @@ def test_init_apply_and_rebuild_reproduce_index_and_view(tmp_path):
     view_before = (ledger_dir / "LEDGER.yaml").read_bytes()
     assert view_before.decode("utf-8").splitlines()[0] == "# GENERATED from history.jsonl by `ledger` — do not edit; author changes with `ledger apply`."
 
+    applied_again = apply(ledger_dir, ledger_dir / "seed.yaml")
+    assert applied_again.returncode == 0, applied_again.stderr
+    assert (ledger_dir / "history.jsonl").read_bytes() == history_before
+    assert (ledger_dir / "ledger.db").read_bytes() == index_before
+    assert (ledger_dir / "LEDGER.yaml").read_bytes() == view_before
+
     rebuilt = ledger(ledger_dir, "rebuild")
     assert rebuilt.returncode == 0, rebuilt.stderr
     assert (ledger_dir / "history.jsonl").read_bytes() == history_before
@@ -106,6 +113,10 @@ def test_apply_edits_items_and_rebuild_discards_hand_edits_to_view(tmp_path):
     )
     result = apply(ledger_dir, edit)
     assert result.returncode == 0, result.stderr
+    history_after_edit = (ledger_dir / "history.jsonl").read_bytes()
+    replayed = apply(ledger_dir, edit)
+    assert replayed.returncode == 0, replayed.stderr
+    assert (ledger_dir / "history.jsonl").read_bytes() == history_after_edit
 
     current = yaml.safe_load((ledger_dir / "LEDGER.yaml").read_text(encoding="utf-8"))
     item = next(item for item in current["items"] if item["id"] == "W-9001")
@@ -165,6 +176,23 @@ def test_apply_rejects_status_edits_and_non_owner_header_changes(tmp_path):
     assert (ledger_dir / "history.jsonl").read_bytes() == before_history
 
 
+def test_apply_refuses_to_remove_the_last_owner(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    batch = write_batch(
+        tmp_path / "remove-owner.yaml",
+        {"header": {"roles": {"owner": {"actors": []}}}},
+    )
+    before_history = (ledger_dir / "history.jsonl").read_bytes()
+    before_index = (ledger_dir / "ledger.db").read_bytes()
+    before_view = (ledger_dir / "LEDGER.yaml").read_bytes()
+
+    refused = apply(ledger_dir, batch)
+    assert refused.returncode != 0
+    assert (ledger_dir / "history.jsonl").read_bytes() == before_history
+    assert (ledger_dir / "ledger.db").read_bytes() == before_index
+    assert (ledger_dir / "LEDGER.yaml").read_bytes() == before_view
+
+
 def test_invalid_later_entry_does_not_partially_apply_batch(tmp_path):
     ledger_dir = make_ledger(tmp_path)
     batch = write_batch(
@@ -189,3 +217,33 @@ def test_invalid_later_entry_does_not_partially_apply_batch(tmp_path):
         item.get("id") == "W-9010"
         for item in yaml.safe_load((ledger_dir / "LEDGER.yaml").read_text(encoding="utf-8"))["items"]
     )
+
+
+def test_load_repairs_corrupt_cache_even_when_cached_version_matches_log(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    with sqlite3.connect(ledger_dir / "ledger.db") as db:
+        version = db.execute("SELECT version FROM metadata").fetchone()[0]
+        db.execute("UPDATE state SET data = ?", ('{"header":{"ledger":"tampered"},"items":[]}',))
+    assert version == len(history.read(ledger_dir))
+    with sqlite3.connect(ledger_dir / "ledger.db") as db:
+        assert db.execute("SELECT version FROM metadata").fetchone()[0] == version
+        assert "tampered" in db.execute("SELECT data FROM state").fetchone()[0]
+
+    repaired = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from fleetwork.ledger import store; store.load(sys.argv[1])",
+            str(ledger_dir),
+        ],
+        env={**os.environ, "PYTHONPATH": os.path.join(ROOT, "src")},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert repaired.returncode == 0, repaired.stderr
+    with sqlite3.connect(ledger_dir / "ledger.db") as db:
+        assert db.execute("SELECT version FROM metadata").fetchone()[0] == version
+        state = json.loads(db.execute("SELECT data FROM state").fetchone()[0])
+    assert state["ledger"] == "demo"
+    assert state["items"][0]["id"] == "W-0001"

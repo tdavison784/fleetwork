@@ -1,4 +1,6 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from threading import Event
 
 import pytest
 import yaml
@@ -60,3 +62,34 @@ def test_failed_view_replacement_preserves_existing_file(tmp_path, monkeypatch):
         view.write(tmp_path, ledger)
     assert (tmp_path / view.FILENAME).read_bytes() == before
     assert not list(tmp_path.glob(".ledger-view-*"))
+
+
+def test_direct_rebuild_holds_writer_lock_until_replacement(tmp_path, monkeypatch):
+    initial = entries()
+    history.append_many(tmp_path, initial, 0)
+    entered, release, writer_started = Event(), Event(), Event()
+    original = index._rebuild
+
+    def paused_rebuild(directory, snapshot):
+        entered.set()
+        assert release.wait(5)
+        return original(directory, snapshot)
+
+    def append():
+        writer_started.set()
+        history.append(tmp_path, HistoryEntry(4, "t", "owner", "edit", "T-1", {"note": "new"}), 3)
+
+    monkeypatch.setattr(index, "_rebuild", paused_rebuild)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rebuilding = pool.submit(index.rebuild, tmp_path)
+        try:
+            assert entered.wait(5)
+            writer = pool.submit(append)
+            assert writer_started.wait(5)
+            with pytest.raises(TimeoutError):
+                writer.result(timeout=0.1)
+        finally:
+            release.set()
+        rebuilding.result(timeout=5)
+        writer.result(timeout=5)
+    assert len(history.read(tmp_path)) == 4
