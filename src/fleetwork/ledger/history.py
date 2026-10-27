@@ -2,6 +2,7 @@
 import copy
 import fcntl
 import json
+import math
 import os
 import stat
 import tempfile
@@ -13,6 +14,35 @@ from fleetwork.ledger.model import HistoryEntry, Ledger, OPS
 
 FILENAME = "history.jsonl"
 _LOCK = ".history.lock"
+
+
+def validate_json_value(value, active=None):
+    """Accept only values that retain their types when written as JSON."""
+    if type(value) in (str, int, bool) or value is None:
+        return
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ConfigError("history numbers must be finite")
+        return
+    if type(value) not in (dict, list):
+        raise ConfigError("history values must use JSON types")
+    if active is None:
+        active = set()
+    identity = id(value)
+    if identity in active:
+        raise ConfigError("history values cannot contain cycles")
+    active.add(identity)
+    try:
+        if isinstance(value, dict):
+            if any(type(key) is not str for key in value):
+                raise ConfigError("history mapping keys must be strings")
+            values = value.values()
+        else:
+            values = value
+        for child in values:
+            validate_json_value(child, active)
+    finally:
+        active.remove(identity)
 
 
 def _validate(entry, expected):
@@ -27,10 +57,15 @@ def _validate(entry, expected):
     if entry.op == "header":
         if entry.item is not None:
             raise ConfigError(f"history version {expected}: header item must be null")
+        if "items" in entry.diff:
+            raise ConfigError(f"history version {expected}: items is reserved and cannot appear in a header")
     elif not isinstance(entry.item, str) or not entry.item:
         raise ConfigError(f"history version {expected}: item must be a nonempty string")
-    if any(not isinstance(key, str) for key in entry.diff):
-        raise ConfigError(f"history version {expected}: diff keys must be strings")
+    if entry.op != "header":
+        for key in ("title", "kind"):
+            if key in entry.diff and (not isinstance(entry.diff[key], str) or not entry.diff[key].strip()):
+                raise ConfigError(f"history version {expected}: {key} must be a nonempty string")
+    validate_json_value(entry.diff)
     if entry.why is not None and not isinstance(entry.why, str):
         raise ConfigError(f"history version {expected}: why must be a string")
 
@@ -52,6 +87,8 @@ def _read(path):
     try:
         data = path.read_bytes()
     except FileNotFoundError:
+        if any((path.parent / name).exists() for name in ("ledger.db", "LEDGER.yaml")):
+            raise ConfigError("history.jsonl is missing but derived ledger files exist; restore history before proceeding")
         return []
     if data and not data.endswith(b"\n"):
         raise ConfigError("history has a torn final line")

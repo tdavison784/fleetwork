@@ -71,6 +71,8 @@ def _refresh_after_commit(ledger_dir, entries):
 def load(ledger_dir):
     """Load the log's current state, repairing missing or stale derived files."""
     with history.transaction(ledger_dir) as tx:
+        if not tx.path.is_file():
+            raise ConfigError("history.jsonl is missing; cannot load the ledger")
         entries = tx.read()
         # Rebuilding also detects changed history with the same version, or a corrupt cache.
         return _refresh(ledger_dir, entries)
@@ -79,6 +81,8 @@ def load(ledger_dir):
 def rebuild(ledger_dir):
     """Rebuild both derived artifacts from a consistent snapshot of the log."""
     with history.transaction(ledger_dir) as tx:
+        if not tx.path.is_file():
+            raise ConfigError("history.jsonl is missing; cannot rebuild the ledger")
         return _refresh(ledger_dir, tx.read())
 
 
@@ -110,6 +114,9 @@ def apply(ledger_dir, batch, actor):
     items = batch.get("items", [])
     if not isinstance(header, dict) or not isinstance(items, list):
         raise ConfigError("batch header must be a mapping and items must be a list")
+    if "items" in header:
+        raise ConfigError("header cannot contain the reserved key 'items'")
+    history.validate_json_value(batch)
     try:
         json.dumps(batch, allow_nan=False)
     except (TypeError, ValueError) as exc:

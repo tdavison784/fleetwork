@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 from contextlib import closing
 
+from fleetwork.errors import ConfigError
 from fleetwork.ledger import history
 from fleetwork.ledger.model import Ledger
 
@@ -23,6 +24,8 @@ def rebuild(ledger_dir):
     """
     directory = Path(ledger_dir)
     with history.transaction(directory) as tx:
+        if not tx.path.is_file():
+            raise ConfigError("history.jsonl is missing; cannot rebuild the index")
         return _rebuild(directory, tx.read())
 
 

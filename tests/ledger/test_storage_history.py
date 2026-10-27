@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from fleetwork.errors import ConfigError, VersionConflict
-from fleetwork.ledger import history
+from fleetwork.ledger import history, store
 from fleetwork.ledger.model import HistoryEntry
 
 
@@ -44,6 +44,22 @@ def test_batch_checks_all_before_writing(tmp_path):
     assert (tmp_path / history.FILENAME).read_bytes() == before
     with pytest.raises(VersionConflict):
         history.append(tmp_path, entry(2), 0)
+
+
+@pytest.mark.parametrize("nested", [{1: "number", "1": "string"}, [{"ok": [{False: "value"}]}]])
+@pytest.mark.parametrize("method", ["append", "commit", "apply"])
+def test_nested_non_string_keys_never_reach_history(tmp_path, nested, method):
+    store.apply(tmp_path, {"header": {"roles": {"owner": {"actors": ["owner"]}}}}, "owner")
+    before = (tmp_path / history.FILENAME).read_bytes()
+    diff = {"title": "test", "extra": nested}
+    with pytest.raises(ConfigError, match="mapping keys must be strings"):
+        if method == "append":
+            history.append(tmp_path, entry(2, diff=diff), 1)
+        elif method == "commit":
+            store.commit(tmp_path, "owner", "add", "A-1", diff)
+        else:
+            store.apply(tmp_path, {"items": [{"id": "A-1", **diff}]}, "owner")
+    assert (tmp_path / history.FILENAME).read_bytes() == before
 
 
 @pytest.mark.parametrize("failure", ["fsync", "replace"])
