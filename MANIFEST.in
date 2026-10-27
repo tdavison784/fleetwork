@@ -1,0 +1,3 @@
+graft packs
+include guard/fleet_guard.py guard/lead_hook.sh
+global-exclude __pycache__ *.py[cod]

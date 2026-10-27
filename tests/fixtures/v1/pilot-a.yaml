@@ -1,0 +1,490 @@
+# Project-neutral v1 ledger fixture (pilot-a): the structure of a real v1 ledger with all project text replaced.
+version: 1
+goal: pilot-a
+items:
+- id: W-0001
+  title: Lane W-0001
+  kind: lane
+  status: done
+  owner: fw-lane-01
+  merged: a58f7464
+  brief: briefs/lane-01.md
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T07:53
+    because: queued
+- id: W-0002
+  title: Lane W-0002
+  kind: lane
+  status: done
+  owner: fw-lane-02
+  merged: 1d19ea09
+  brief: briefs/lane-02.md
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T07:53
+    because: queued
+- id: W-0003
+  title: Lane W-0003
+  kind: lane
+  status: done
+  owner: fw-lane-03
+  brief: briefs/lane-03.md
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T07:53
+    because: queued
+- id: W-0004
+  title: Lane W-0004
+  kind: lane
+  status: done
+  owner: fw-lane-04
+  brief: briefs/lane-04.md
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T07:53
+    because: queued
+- id: W-0005
+  title: Lane W-0005
+  kind: lane
+  status: done
+  sealed-at: c4221086
+  owner: fw-lane-05
+  brief: briefs/lane-05.md
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  integrity: integrity rule (prose)
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T07:53
+    because: queued
+- id: W-0006
+  title: Lane W-0006
+  kind: lane
+  status: done
+  merged: e1b0306c
+  owner: fw-lane-06
+  brief: briefs/lane-06.md
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T07:53
+    because: queued
+- id: W-0007
+  title: Review W-0007
+  kind: review
+  status: ready
+  ready-when: prose condition (unenforced)
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  integrity: integrity rule (prose)
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T08:10
+    because: queued
+- id: W-0008
+  title: Lane W-0008
+  kind: lane
+  status: done
+  owner: fw-lane-07
+  quota-actual:
+    provider: claude
+    note: recorded
+  brief: briefs/lane-08.md
+  providers:
+  - claude
+  glm-executable: false
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T08:10
+    because: queued
+- id: W-0010
+  title: Commander task W-0010
+  kind: commander-task
+  status: done
+  result: result text
+  depends:
+  - W-0007
+  - W-0024
+  - W-0025
+  providers:
+  - claude
+  glm-executable: false
+  auto-start: false
+- id: W-0011
+  title: Commander task W-0011
+  kind: commander-task
+  status: done
+  owner: fw-lane-06
+  merged: bcb0495f
+  result: result text
+  depends:
+  - W-0010
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  quota-estimate:
+    provider: any
+    tokens: ~100k
+- id: W-0012
+  title: Commander task W-0012
+  kind: commander-task
+  status: done
+  owner: fw-lane-06
+  merged: 1c2bfc6b
+  result: result text
+  depends:
+  - W-0010
+  providers:
+  - claude
+  glm-executable: false
+  auto-start: false
+  ready-when: prose condition (unenforced)
+  quota-estimate:
+    provider: claude
+    tokens: ~100k
+- id: W-0013
+  title: Commander task W-0013
+  kind: commander-task
+  status: done
+  owner: commander
+  result: result text
+  depends:
+  - W-0012
+  - W-0031
+  - W-0032
+  note: note text
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+- id: W-0014
+  title: Decision W-0014
+  kind: decision
+  decision-rights: user
+  status: done
+  note: note text
+  depends:
+  - W-0013
+  providers:
+  - claude
+  glm-executable: false
+- id: W-0015
+  title: Commander task W-0015
+  kind: commander-task
+  status: done
+  lane: lane-06
+  note: note text
+  depends:
+  - W-0014
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+- id: W-0016
+  title: Decision W-0016
+  kind: decision
+  decision-rights: claude-commander
+  status: done
+  note: note text
+  depends:
+  - W-0005
+  - W-0015
+  providers:
+  - claude
+  glm-executable: false
+- id: W-0017
+  title: Commander task W-0017
+  kind: commander-task
+  status: done
+  note: note text
+  lane: lane-06
+  depends:
+  - W-0016
+  providers:
+  - claude
+  glm-executable: false
+- id: W-0018
+  title: Commander task W-0018
+  kind: commander-task
+  status: in-progress
+  note: note text
+  depends:
+  - W-0017
+  providers:
+  - claude
+  glm-executable: false
+- id: W-0019
+  title: Decision W-0019
+  kind: decision
+  decision-rights: user
+  status: ready
+  providers:
+  - claude
+  glm-executable: false
+- id: W-0020
+  title: Decision W-0020
+  kind: decision
+  decision-rights: user
+  status: queued
+  ready-when: prose condition (unenforced)
+  providers:
+  - claude
+  glm-executable: false
+- id: W-0020a
+  title: Evidence prep W-0020a
+  kind: evidence-prep
+  status: ready
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: true
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T08:10
+    because: queued
+- id: W-0021
+  title: Commander task W-0021
+  kind: commander-task
+  status: queued
+  ready-when: prose condition (unenforced)
+  providers:
+  - claude
+  glm-executable: false
+- id: W-0022
+  title: Commander task W-0022
+  kind: commander-task
+  status: ready
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T08:22
+    because: queued
+- id: W-0023
+  title: Commander task W-0023
+  kind: commander-task
+  status: ready
+  providers:
+  - claude
+  glm-executable: false
+- id: W-0024
+  title: Lane W-0024
+  kind: lane
+  status: done
+  owner: fw-lane-09
+  brief: briefs/lane-09.md
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  integrity: integrity rule (prose)
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T08:30
+    because: queued
+- id: W-0025
+  title: Lane W-0025
+  kind: lane
+  status: done
+  owner: fw-lane-09
+  brief: briefs/lane-09.md
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T08:40
+    because: queued
+- id: W-0026
+  title: Lane W-0026
+  kind: lane
+  status: queued
+  ready-when: prose condition (unenforced)
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T08:55
+    because: queued
+- id: W-0027
+  title: Lane W-0027
+  kind: lane
+  status: done
+  merged: 2cc495e7
+  owner: fw-lane-10
+  brief: briefs/lane-10.md
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  integrity: integrity rule (prose)
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T09:10
+    because: queued
+- id: W-0028
+  title: Decision W-0028
+  kind: decision
+  decision-rights: user
+  status: done
+  decision: decision text
+  decided-by: owner
+  depends:
+  - W-0012
+  providers:
+  - claude
+  glm-executable: false
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T10:50
+    because: queued
+- id: W-0029
+  title: Lane W-0029
+  kind: lane
+  status: done
+  owner: fw-lane-11
+  merged: 1dac7755
+  brief: briefs/lane-11.md
+  depends:
+  - W-0028
+  providers:
+  - claude
+  glm-executable: false
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T10:55
+    because: queued
+- id: W-0030
+  title: Commander task W-0030
+  kind: commander-task
+  status: done
+  owner: fw-lane-06
+  result: result text
+  depends:
+  - W-0029
+  providers:
+  - claude
+  glm-executable: false
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T10:55
+    because: queued
+- id: W-0031
+  title: Commander task W-0031
+  kind: commander-task
+  status: done
+  note: note text
+  depends:
+  - W-0030
+  - W-0032
+  providers:
+  - claude
+  - glm
+  glm-executable: false
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T10:55
+    because: queued
+- id: W-0032
+  title: Lane W-0032
+  kind: lane
+  status: done
+  owner: fw-lane-12
+  merged: da672887
+  brief: briefs/lane-12.md
+  depends:
+  - W-0030
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T16:30
+    because: queued
+- id: W-0033
+  title: Commander task W-0033
+  kind: commander-task
+  status: done
+  owner: fw-lane-06
+  result: result text
+  follow-up: W-0034
+  depends: []
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T16:30
+    because: queued
+- id: W-0034
+  title: Lane W-0034
+  kind: lane
+  status: queued
+  depends:
+  - W-0018
+  note: note text
+  providers:
+  - claude
+  - glm
+  glm-executable: true
+  auto-start: false
+  provenance:
+    queued-by: commander
+    queued-at: 2026-10-17T16:30
+    because: queued
+windows: []

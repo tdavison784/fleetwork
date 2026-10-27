@@ -1,0 +1,54 @@
+# First apply batch after the seed: `ledger apply items.yaml --actor tdavison784`.
+items:
+  - id: L-0002
+    title: CardLocation type and EvLocationBanished event
+    kind: lane
+    brief: briefs/types.md
+    run: {profile: builder, providers: [claude], auto-start: false}
+    guard: {freeze: [cards.json]}
+    why: "Locations milestone: every later item builds on the type"
+  - id: L-0003
+    title: 'Loader maps "Type": "Location"; start-of-turn lore trigger from the Lore field'
+    kind: lane
+    needs: [L-0002]
+    brief: briefs/loader.md
+    run: {profile: builder, providers: [claude]}
+    guard: {freeze: [cards.json]}
+  - id: L-0004
+    title: Occupants / AtLocation on cards; occupancy cleared on remove and banish
+    kind: lane
+    needs: [L-0002]
+    brief: briefs/occupancy.md
+    run: {profile: builder, providers: [claude]}
+  - id: L-0005
+    title: PlayLocation action and moving characters (one ink per character moved, no per-turn limit)
+    kind: lane
+    needs: [L-0003, L-0004]
+    brief: briefs/play-move.md
+    run: {profile: builder, providers: [claude]}
+    guard: {note: "locations never deal damage; no occupant cap; no limit on locations in play"}
+  - id: L-0006
+    title: Characters may challenge locations; actions and songs may not target them
+    kind: lane
+    needs: [L-0005]
+    brief: briefs/challenge.md
+    run: {profile: builder, providers: [claude]}
+  - id: L-0007
+    title: Location target types in effects and the effect parser
+    kind: lane
+    needs: [L-0002]
+    brief: briefs/targets.md
+    run: {profile: builder, providers: [claude]}
+  - id: L-0008
+    title: While-here auras from Body_Text (location_auras.go)
+    kind: lane
+    needs: [L-0004, L-0007]
+    brief: briefs/auras.md
+    run: {profile: builder, providers: [claude]}
+  - id: L-0009
+    title: Review the milestone against the Location rules before merging to main
+    kind: review
+    needs: [L-0003, L-0005, L-0006, L-0008]
+    gates:
+      - {type: human, who: owner, what: "play-test a game with two locations"}
+    run: {profile: reviewer, providers: [claude]}

@@ -1,0 +1,791 @@
+"""Tests for fleet_guard.py v3. stdlib unittest; no network, no real herdr, no real sleeps."""
+import argparse, json, os, shutil, sys, tempfile, unittest
+import yaml
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fleet_guard as fg
+
+CMD_CWD = "/wt/integration"
+
+
+class FakeHerdr:
+    """Records every herdr call; serves `agent list` from self.agent_list."""
+    def __init__(self):
+        self.calls, self.agent_list, self.n = [], [], 0
+
+    def __call__(self, *args, timeout=60, mutate=True):
+        self.calls.append(args)
+        if args[:2] == ("agent", "list"):
+            return {"result": {"agents": list(self.agent_list)}}
+        if args[:2] == ("agent", "get"):
+            return {"result": {"agent": {"agent_status": "idle"}}}
+        if args[:2] == ("tab", "create"):
+            self.n += 1
+            return {"result": {"root_pane": {"pane_id": f"w1:pT{self.n}"}}}
+        if args[:2] == ("pane", "split"):
+            self.n += 1
+            return {"result": {"pane": {"pane_id": f"w1:pG{self.n}"}}}
+        return {"result": {}}
+
+    def find(self, *prefix):
+        return [c for c in self.calls if c[:len(prefix)] == prefix]
+
+    def prompts(self, name):
+        return [c[3] for c in self.calls if c[:3] == ("agent", "prompt", name)]
+
+
+def ag(name, status="idle", cwd="/wt/x", pane="w1:p1", session=None):
+    d = {"name": name, "agent_status": status, "cwd": cwd, "pane_id": pane}
+    if session:
+        d["agent_session"] = {"value": session}
+    return d
+
+
+def make_args(**kw):
+    a = dict(commander_pane="", commander_session="", commander_agent="fw-commander", commander_cwd=CMD_CWD,
+             fleet_dir="fleet", prefix="fw-", glm_prefix="glm-", glm_model="glm-5.3",
+             threshold=90.0, zai_threshold=90.0, ctx_threshold=80.0, interval=30, zai_interval=120, buffer=90,
+             handback_timeout=1, no_handoff=False, dry_run=False,
+             lane_prefix="lane", integration_branch="p5-int", workspace="w1")
+    a.update(kw)
+    return argparse.Namespace(**a)
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.saved = {k: getattr(fg, k) for k in ("herdr", "git_head", "now", "claude_usage", "zai_usage",
+                                                  "STATE_DIR", "FLAG", "STATE", "EVENTS", "DRY", "MODELS_FILE", "set_lead")}
+        fg.set_state_dir(self.tmp)
+        fg.DRY = False
+        fg.MODELS_FILE = os.path.join(self.tmp, "models.txt")
+        self.h = FakeHerdr()
+        self.t = 1_000_000.0
+        self.windows = {}
+        self.contexts = {}
+        self.zai = {}
+        fg.herdr = self.h
+        real_set_lead = fg.set_lead
+        fg.set_lead = lambda cwd, role, holder: real_set_lead(cwd, role, holder) if os.path.isdir(cwd) else True
+        fg.git_head = lambda p: "base" + "0" * 36
+        fg.now = lambda: self.t
+        fg.claude_usage = lambda s: (self.windows, self.t - 1, None, self.contexts)
+        fg.zai_usage = lambda: self.zai
+        self._sleep = fg.time.sleep
+        fg.time.sleep = lambda s: None
+        self._stdout = sys.stdout
+        sys.stdout = open(os.devnull, "w")
+        self.a = make_args()
+        self.lp = fg.new_loop()
+        self.st = {}
+
+    def tearDown(self):
+        sys.stdout.close()
+        sys.stdout = self._stdout
+        fg.time.sleep = self._sleep
+        for k, v in self.saved.items():
+            setattr(fg, k, v)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def step(self):
+        self.st, delay = fg.step(self.st, self.a, self.lp)
+        return delay
+
+    def events(self):
+        try:
+            return [json.loads(l) for l in open(fg.EVENTS)]
+        except FileNotFoundError:
+            return []
+
+    def kinds(self):
+        return [e["event"] for e in self.events()]
+
+    def trip_claude(self, reset_in=3600):
+        self.windows = {"seven_day": (95, self.t + reset_in)}
+
+    def fleet(self, commander="idle"):
+        self.h.agent_list = [ag("fw-commander", commander, CMD_CWD, "w1:p8"),
+                             ag("fw-bundle", "working", "/wt/bundle", "w1:p2")]
+
+    def settle(self):
+        """After the Esc the working agents are idle."""
+        for x in self.h.agent_list:
+            if x["agent_status"] == "working" and x["name"].startswith("fw-"):
+                x["agent_status"] = "idle"
+
+    def go(self):
+        self.step()      # trip -> PAUSE
+        self.settle()
+        self.step()      # enforce -> handoffs
+
+
+class HandoffTests(Base):
+    def test_saved_handoffs_require_explicit_opt_in_for_recovery(self):
+        self.a.no_handoff = True
+        for state in ({"handoff": {"fw-lane": {}}},
+                      {"commander": {"agent": "glm-commander"}},
+                      {"failed_autostarts": {"W-1": {}}},
+                      {"zai_paused": True, "glm_paused": ["glm-lane"]}):
+            with self.subTest(state=state):
+                with self.assertRaisesRegex(ValueError, "--handoff"):
+                    fg.validate_recovery(state, self.a)
+                self.a.no_handoff = False
+                fg.validate_recovery(state, self.a)
+                self.a.no_handoff = True
+        fg.validate_recovery({"commander": {"skipped": True}}, self.a)
+
+    def test_default_monitoring_never_polls_fallback(self):
+        self.assertTrue(fg.build_parser().parse_args([]).no_handoff)
+        self.a.no_handoff = True
+        fg.zai_usage = lambda: self.fail("unexpected Z.AI quota request")
+        self.trip_claude()
+        self.step()
+        self.settle()
+        self.step()
+        self.assertFalse(self.h.find("agent", "start"))
+
+    def test_opted_in_guard_polls_quota_and_hands_off(self):
+        self.assertFalse(fg.build_parser().parse_args(["--handoff"]).no_handoff)
+        calls = []
+        fg.zai_usage = lambda: calls.append(True) or {}
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.assertTrue(calls)
+        self.assertIn("glm-bundle", [c[2] for c in self.h.find("agent", "start")])
+
+    def test_handback_retries_failed_lead_without_reclosing_pane(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        original = fg.set_lead
+        fg.set_lead = lambda cwd, role, holder: False if holder == "fw-bundle" else original(cwd, role, holder)
+        self.t += 4000
+        self.windows = {}
+        self.h.calls.clear()
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertTrue(self.st["handoff"]["fw-bundle"]["closed"])
+        with open(fg.STATE) as saved:
+            self.assertTrue(json.load(saved)["handoff"]["fw-bundle"]["closed"])
+        self.assertFalse(self.h.prompts("fw-bundle"))
+        self.h.calls.clear()
+        fg.set_lead = original
+        self.step()
+        self.assertFalse(any(c[2] == "glm-bundle" for c in self.h.find("agent", "prompt")))
+        self.assertFalse(any(c[2] == "w1:pG2" for c in self.h.find("pane", "close")))
+        self.assertFalse(os.path.exists(fg.FLAG))
+        self.assertTrue(self.h.prompts("fw-bundle"))
+
+    def test_incomplete_start_retries_pane_close_without_agent_calls(self):
+        for operation in ("configure", "start"):
+            with self.subTest(operation=operation):
+                self.h.calls.clear()
+                self.h.agent_list = [ag("fw-bundle", "idle")]
+                def fail_initial(*args, **kwargs):
+                    if args[:2] == ("pane", "close"):
+                        return {}
+                    if operation == "configure" and args[:2] == ("pane", "run"):
+                        return {}
+                    if operation == "start" and args[:3] == ("agent", "start", "glm-bundle"):
+                        return {}
+                    return self.h(*args, **kwargs)
+                fg.herdr = fail_initial
+                state = {}
+                fg.handoff("fw-bundle", state, self.a)
+                self.assertFalse(state["handoff"]["fw-bundle"]["prompted"])
+                with open(fg.STATE) as saved:
+                    self.assertFalse(json.load(saved)["handoff"]["fw-bundle"]["prompted"])
+                self.h.calls.clear()
+                fg.herdr = self.h
+                self.assertIsNotNone(fg.handback(state, self.a, True))
+                self.assertFalse(self.h.find("agent", "prompt"))
+                self.assertFalse(self.h.find("agent", "wait"))
+                self.assertTrue(self.h.find("pane", "close"))
+
+    def test_failed_start_with_failed_lead_restore_is_tracked_closed(self):
+        self.h.agent_list = [ag("fw-bundle", "idle")]
+        original = self.h
+        def fail_prompt(*args, **kwargs):
+            if args[:3] == ("agent", "prompt", "glm-bundle"):
+                return {}
+            return original(*args, **kwargs)
+        fg.herdr = fail_prompt
+        fg.set_lead = lambda cwd, role, holder: role != "claude"
+        state = {}
+        fg.handoff("fw-bundle", state, self.a)
+        self.assertTrue(state["handoff"]["fw-bundle"]["closed"])
+        self.h.calls.clear()
+        fg.set_lead = lambda cwd, role, holder: True
+        self.assertIsNotNone(fg.handback(state, self.a, False))
+        self.assertFalse(self.h.find("agent", "prompt"))
+        self.assertFalse(self.h.find("pane", "close"))
+
+    def test_paused_replacement_waits_for_safe_handback(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.h.calls.clear()
+        self.st.update(zai_paused=True, zai_wake_at=self.t + 10000)
+        self.t += 4000
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertIn("fw-bundle", self.st["handoff"])
+        self.assertFalse(self.h.find("pane", "close"))
+        self.assertFalse(self.h.prompts("fw-bundle"))
+        self.st["zai_wake_at"] = self.t - 1
+        self.step()
+        self.assertFalse(os.path.exists(fg.FLAG))
+        self.assertTrue(any(p.startswith("HANDBACK") for p in self.h.prompts("glm-bundle")))
+
+    def test_failed_start_or_prompt_does_not_register_handoff(self):
+        for command in ("start", "prompt"):
+            with self.subTest(command=command):
+                wt = os.path.join(self.tmp, command)
+                os.mkdir(wt)
+                self.h.agent_list = [ag("fw-bundle", "idle", wt)]
+                original = self.h
+                def fail(*args, **kwargs):
+                    if args[:3] == ("agent", command, "glm-bundle"):
+                        return {}
+                    return original(*args, **kwargs)
+                fg.herdr = fail
+                state = {}
+                fg.handoff("fw-bundle", state, self.a)
+                self.assertFalse(state.get("handoff"))
+                self.assertTrue(self.h.find("pane", "close"))
+                with open(os.path.join(wt, ".lane-lead")) as lead:
+                    self.assertEqual(json.load(lead)["holder"], "fw-bundle")
+                fg.herdr = self.h
+
+    def test_failed_lead_transfer_does_not_prompt_or_register(self):
+        self.h.agent_list = [ag("fw-bundle", "idle")]
+        fg.set_lead = lambda cwd, role, holder: role != "glm"
+        state = {}
+        fg.handoff("fw-bundle", state, self.a)
+        self.assertFalse(state.get("handoff"))
+        self.assertFalse(self.h.prompts("glm-bundle"))
+        self.assertTrue(self.h.find("pane", "close"))
+
+    def test_later_tripped_windows_extend_both_wake_times(self):
+        self.windows = {"five_hour": (95, self.t + 100)}
+        self.zai = {"short": (95, self.t + 100)}
+        self.step()
+        self.t += 50
+        self.windows["seven_day"] = (95, self.t + 1000)
+        self.zai["long"] = (95, self.t + 2000)
+        self.lp["zai_at"] = 0
+        self.step()
+        self.assertEqual(self.st["wake_at"], self.t + 1000 + self.a.buffer)
+        self.assertEqual(self.st["zai_wake_at"], self.t + 2000 + self.a.buffer)
+        self.t += 200
+        self.step()
+        self.assertTrue(self.st["zai_paused"])
+        self.assertTrue(os.path.exists(fg.FLAG))
+
+    def test_failed_close_keeps_agents_paused_and_retries(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.h.calls.clear()
+        self.t += 4000
+        original = fg.herdr
+        def fail_close(*args, **kwargs):
+            if args[:2] == ("pane", "close"):
+                return {}
+            return original(*args, **kwargs)
+        fg.herdr = fail_close
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertIn("fw-bundle", self.st["handoff"])
+        self.assertFalse(self.h.prompts("fw-bundle"))
+        self.assertFalse(self.h.prompts("fw-commander"))
+        fg.herdr = original
+        self.step()
+        self.assertFalse(os.path.exists(fg.FLAG))
+        self.assertEqual(len(self.h.prompts("fw-bundle")), 1)
+
+    def test_wait_failure_does_not_close_or_resume(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.h.calls.clear()
+        self.t += 4000
+        original = fg.herdr
+        def fail_wait(*args, **kwargs):
+            if args[:2] == ("agent", "wait"):
+                return {}
+            return original(*args, **kwargs)
+        fg.herdr = fail_wait
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertFalse(self.h.find("pane", "close"))
+        self.assertFalse(self.h.prompts("fw-bundle"))
+
+    def test_unknown_agent_status_does_not_close_or_resume(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.h.calls.clear()
+        self.t += 4000
+        original = fg.herdr
+        def unknown_status(*args, **kwargs):
+            if args[:2] == ("agent", "get"):
+                return {}
+            return original(*args, **kwargs)
+        fg.herdr = unknown_status
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertFalse(self.h.find("pane", "close"))
+        self.assertFalse(self.h.prompts("fw-bundle"))
+
+    def test_commander_handed_off_before_lanes(self):
+        self.fleet()
+        self.trip_claude()
+        self.go()
+        starts = [c[2] for c in self.h.find("agent", "start")]
+        self.assertEqual(starts, ["glm-commander", "glm-bundle"])
+        splits = self.h.find("pane", "split")
+        self.assertEqual(splits[0][:2], ("pane", "split"))
+        self.assertEqual(splits[0][2], "w1:p8")
+        self.assertEqual(splits[0][splits[0].index("--cwd") + 1], CMD_CWD)
+        self.assertEqual(splits[1][splits[1].index("--cwd") + 1], "/wt/bundle")
+        p = self.h.prompts("glm-commander")[0]
+        self.assertIn("You are glm-commander, temporarily commanding the env-impact fleet", p)
+        self.assertIn("fleet/FLEET.md", p)
+        self.assertIn("fleet/briefs/commander.md", p)
+        self.assertIn("fleet/COMMANDER.md", p)
+        self.assertIn("HANDBACK DONE", p)
+        for line in self.h.find("pane", "run"):
+            self.assertIn("FLEET_ROLE=glm", line[3])
+        self.assertIn("commander", [e.get("lane") for e in self.events() if e["event"] == "HANDOFF"])
+        self.assertEqual(self.st["commander"]["agent"], "glm-commander")
+
+    def test_lead_files_written(self):
+        wt = os.path.join(self.tmp, "wt-cmd")
+        os.makedirs(wt)
+        lane = os.path.join(self.tmp, "wt-lane")
+        os.makedirs(lane)
+        self.a = make_args(commander_cwd=wt)
+        self.h.agent_list = [ag("fw-commander", "idle", wt, "w1:p8"), ag("fw-bundle", "working", lane, "w1:p2")]
+        self.trip_claude()
+        self.go()
+        for d in (wt, lane):
+            self.assertEqual(json.load(open(os.path.join(d, ".lane-lead")))["role"], "glm")
+        self.assertEqual(json.load(open(os.path.join(wt, ".lane-lead")))["holder"], "glm-commander")
+
+    def test_lane_prompt_uses_fleet_dir(self):
+        self.a = make_args(fleet_dir="docs/other/fleet")
+        self.fleet()
+        self.trip_claude()
+        self.go()
+        p = self.h.prompts("glm-bundle")[0]
+        self.assertIn("docs/other/fleet/FLEET.md", p)
+        self.assertIn("docs/other/fleet/briefs/bundle.md", p)
+        self.assertIn("docs/other/fleet/status/bundle.md", p)
+        self.assertNotIn("phase3", p)
+
+    def test_commander_missing_logs_skip_and_lanes_continue(self):
+        self.h.agent_list = [ag("fw-bundle", "working", "/wt/bundle", "w1:p2")]
+        self.trip_claude()
+        self.go()
+        self.assertIn("handoff-skip", self.kinds())
+        self.assertEqual([c[2] for c in self.h.find("agent", "start")], ["glm-bundle"])
+
+    def test_working_commander_waits(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.step()
+        self.settle()
+        self.h.agent_list[0]["agent_status"] = "working"
+        self.step()
+        self.assertIn("handoff-wait", self.kinds())
+        self.assertNotIn("glm-commander", [c[2] for c in self.h.find("agent", "start")])
+
+
+class HandbackTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.fleet()
+        self.trip_claude()
+        self.go()   # handed off
+        self.h.calls.clear()
+        snap = json.load(open(fg.STATE))
+        self.lane_pane = snap["handoff"]["fw-bundle"]["pane"]
+        self.cmd_pane = snap["commander"]["pane"]
+
+    def reset_window(self):
+        self.t += 4000
+        self.windows = {}
+
+    def test_reset_hands_back_lanes_then_commander_with_single_resume(self):
+        self.h.agent_list += [ag("glm-commander"), ag("glm-bundle"), ag("glm-extra", "working")]
+        self.reset_window()
+        self.step()
+        closes = [c[2] for c in self.h.find("pane", "close")]
+        self.assertEqual(closes, [self.lane_pane, self.cmd_pane])
+        exits = [c[2] for c in self.h.find("agent", "prompt") if c[3] == "/exit"]
+        self.assertEqual(exits, ["glm-bundle", "glm-commander"])
+        # lane resumes get their own message; commander gets exactly ONE combined message
+        self.assertEqual(len(self.h.prompts("fw-commander")), 1)
+        cm = self.h.prompts("fw-commander")[0]
+        self.assertIn("GLM commander log", cm)
+        self.assertIn("glm-bundle", cm)
+        self.assertIn("commit(s) on the integration branch", cm)
+        self.assertIn("glm-extra", cm)           # unregistered glm agent listed
+        self.assertNotIn("glm-bundle,", cm.split("still running")[-1])
+        self.assertEqual(len(self.h.prompts("fw-bundle")), 1)
+        self.assertIn("GLM-5.3 agent (glm-bundle)", self.h.prompts("fw-bundle")[0])
+        self.assertFalse(os.path.exists(fg.FLAG))
+
+    def test_unregistered_glm_agents_survive(self):
+        self.h.agent_list += [ag("glm-commander"), ag("glm-bundle"), ag("glm-extra", "working")]
+        panes = {self.lane_pane, self.cmd_pane}
+        self.reset_window()
+        self.step()
+        closed = {c[2] for c in self.h.find("pane", "close")}
+        self.assertEqual(closed, panes)
+        self.assertFalse([c for c in self.h.calls if len(c) > 2 and c[2] == "glm-extra" and c[0] == "agent" and c[1] in ("prompt", "send-keys")])
+
+    def test_handback_skipped_prompt_when_zai_paused(self):
+        self.st.update(zai_paused=True, zai_wake_at=self.t + 10**6)
+        self.reset_window()
+        self.step()
+        self.assertFalse([c for c in self.h.find("agent", "prompt") if str(c[3]).startswith("HANDBACK")])
+
+
+class IdleCommanderTests(Base):
+    def test_idle_commander_gets_single_combined_resume(self):
+        # commander idle at the trip (never in the Esc'd set); a lane is working
+        self.h.agent_list = [ag("fw-commander", "idle", CMD_CWD, "w1:p8"),
+                             ag("fw-bundle", "working", "/wt/bundle", "w1:p2")]
+        self.trip_claude()
+        self.go()
+        self.assertEqual(self.st["commander"]["agent"], "glm-commander")
+        self.h.calls.clear()
+        self.t += 4000
+        self.windows = {}
+        self.step()
+        msgs = self.h.prompts("fw-commander")
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("GLM commander log", msgs[0])
+        self.assertIn("glm-commander commanded the fleet", msgs[0])
+
+    def test_paused_but_not_handed_off_gets_plain_resume(self):
+        self.h.agent_list = [ag("fw-commander", "working", CMD_CWD, "w1:p8")]
+        self.zai = {"error": "down"}      # handoffs disabled while Z.AI status is unknown
+        self.trip_claude()
+        self.step(); self.step()
+        self.assertFalse(self.h.find("agent", "start"))
+        self.h.calls.clear()
+        self.t += 4000
+        self.windows = {}
+        self.step()
+        msgs = self.h.prompts("fw-commander")
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("not handed off", msgs[0])
+        self.assertNotIn("GLM commander log", msgs[0])
+
+
+def item(iid, kind="lane", status="ready", **kw):
+    d = {"id": iid, "title": f"title {iid}", "kind": kind, "status": status, "providers": ["claude", "glm"],
+         "glm-executable": True, "auto-start": True}
+    if kind == "lane":
+        d["brief"] = f"briefs/{iid.lower()}.md"
+    d.update(kw)
+    return d
+
+
+class LedgerTests(Base):
+    FD = "docs/led"
+
+    def setUp(self):
+        super().setUp()
+        self.cmd = os.path.join(self.tmp, "worktrees", "integ")
+        os.makedirs(os.path.join(self.cmd, self.FD, "briefs"))
+        self.a = make_args(commander_cwd=self.cmd, fleet_dir=self.FD)
+        self.git_calls = []
+        self._rg = fg.run_git
+        fg.run_git = lambda cwd, *a: (self.git_calls.append(a) or (0, "p5-int"))
+        self.h.agent_list = [ag("fw-commander", "working", self.cmd, "w1:p8")]
+
+    def tearDown(self):
+        fg.run_git = self._rg
+        super().tearDown()
+
+    def ledger(self, items, briefs=True):
+        for i in items:
+            if briefs and i.get("brief"):
+                with open(os.path.join(self.cmd, self.FD, i["brief"]), "w") as f:
+                    f.write("# brief")
+        self.ledger_path = os.path.join(self.cmd, self.FD, "LEDGER.yaml")
+        with open(self.ledger_path, "w") as f:
+            yaml.safe_dump({"version": 1, "items": items, "windows": []}, f)
+
+    def window(self):
+        self.trip_claude()
+        self.step()
+        self.settle()
+        self.step()
+
+    def started(self):
+        return [c[2] for c in self.h.find("agent", "start")]
+
+    def cmd_prompt(self):
+        return self.h.prompts("glm-commander")[0]
+
+    def test_failed_autostart_cleanup_is_tracked_and_recovered(self):
+        self.ledger([item("W-1")])
+        wt = os.path.join(self.tmp, "new-lane")
+        os.mkdir(wt)
+        original_worktree = fg.make_lane_worktree
+        fg.make_lane_worktree = lambda a, lane: (wt, "lane/w-1")
+        def fail(*args, **kwargs):
+            if args[:3] == ("agent", "prompt", "glm-w-1") or args[:2] == ("pane", "close"):
+                return {}
+            return self.h(*args, **kwargs)
+        fg.herdr = fail
+        try:
+            self.window()
+            self.assertFalse(self.st["ledger"]["autostarted"])
+            self.assertIn("W-1", self.st["failed_autostarts"])
+            fg.herdr = self.h
+            self.t += 4000
+            self.windows = {}
+            self.step()
+            self.assertNotIn("W-1", self.st.get("failed_autostarts", {}))
+            self.assertTrue(self.h.find("pane", "close"))
+        finally:
+            fg.make_lane_worktree = original_worktree
+
+    def test_existing_worktree_requires_matching_repository_and_branch(self):
+        wt = os.path.join(os.path.dirname(self.cmd), "lane-w-1")
+        os.makedirs(wt)
+        def fake(cwd, *args):
+            if args[-1] == "--git-common-dir":
+                return 0, "/repo/.git" if cwd == self.cmd else candidate[0]
+            if args[-1] == "--show-toplevel":
+                return 0, wt
+            return 0, candidate[1]
+        fg.run_git = fake
+        candidate = ["/other/.git", "lane/w-1"]
+        self.assertIsNone(fg.make_lane_worktree(self.a, "w-1")[0])
+        candidate[:] = ["/repo/.git", "wrong"]
+        self.assertIsNone(fg.make_lane_worktree(self.a, "w-1")[0])
+        candidate[:] = ["/repo/.git", "lane/w-1"]
+        self.assertEqual(fg.make_lane_worktree(self.a, "w-1"), (wt, "lane/w-1"))
+
+    def test_decision_claude_only_and_noauto_never_started_or_offered(self):
+        self.ledger([
+            item("W-1"),
+            item("W-2", **{"auto-start": False}),
+            item("W-3", kind="decision", **{"decision-rights": "user"}),
+            item("W-4", kind="commander-task", providers=["claude"], **{"glm-executable": False}),
+            item("W-5", kind="evidence-prep"),
+            item("W-6", kind="review", **{"auto-start": False}),
+            item("W-7", kind="decision", providers=["claude", "glm"]),   # even if marked executable
+            item("W-8", kind="commander-task", providers=["claude"]),     # glm-executable true but claude-only
+        ])
+        self.window()
+        self.assertEqual(self.started(), ["glm-commander", "glm-w-1"])
+        p = self.cmd_prompt()
+        self.assertIn("W-5", p); self.assertIn("W-6", p)
+        for bad in ("W-1 ", "W-2", "W-3", "W-4", "W-7", "W-8"):
+            self.assertNotIn(bad, p.split("LEDGER")[-1])
+        tab = self.h.find("tab", "create")[0]
+        self.assertEqual(tab[tab.index("--label") + 1], "glm-w-1")
+        self.assertIn(os.path.join(os.path.dirname(self.cmd), "lane-w-1"), tab)
+
+    def test_depends_not_done_is_not_ready(self):
+        self.ledger([item("W-1", status="queued"), item("W-2", depends=["W-1"]), item("W-3", depends=["W-99"]),
+                     item("W-4", kind="review", depends=["W-1"], **{"auto-start": False})])
+        self.window()
+        self.assertEqual(self.started(), ["glm-commander"])
+        self.assertNotIn("W-4", self.cmd_prompt())
+
+    def test_depends_done_is_ready(self):
+        self.ledger([item("W-1", status="done"), item("W-2", depends=["W-1"])])
+        self.window()
+        self.assertEqual(self.started(), ["glm-commander", "glm-w-2"])
+
+    def test_owner_or_missing_brief_not_started(self):
+        self.ledger([item("W-1", owner="fw-x"), item("W-2")], briefs=True)
+        os.remove(os.path.join(self.cmd, self.FD, "briefs", "w-2.md"))
+        self.window()
+        self.assertEqual(self.started(), ["glm-commander"])
+
+    def test_cap_two_per_window(self):
+        self.ledger([item("W-1"), item("W-2"), item("W-3")])
+        self.window()
+        self.assertEqual(self.started(), ["glm-commander", "glm-w-1", "glm-w-2"])
+        self.assertIn("autostart-skip", self.kinds())
+        self.step(); self.step()                       # later iterations never start more
+        self.assertEqual(len(self.started()), 3)
+        ev = [e for e in self.events() if e["event"] == "AUTOSTART"]
+        self.assertEqual([e["item"] for e in ev], ["W-1", "W-2"])
+        self.assertTrue(any(c[:3] == ("worktree", "add", "-b") and c[3] == "lane/w-1" for c in self.git_calls))
+
+    def test_unreadable_ledger_is_v3_behaviour(self):
+        for bad in (None, "items: [unclosed", "just a string"):
+            with self.subTest(bad=bad):
+                self.setUp_again()
+                if bad is not None:
+                    with open(os.path.join(self.cmd, self.FD, "LEDGER.yaml"), "w") as f:
+                        f.write(bad)
+                self.window()
+                self.assertEqual(self.started(), ["glm-commander"])
+                self.assertNotIn("LEDGER", self.cmd_prompt())
+                self.assertFalse(self.h.find("tab", "create"))
+                self.assertEqual([e for e in self.events() if e["event"] == "ledger"][0]["status"], "unreadable")
+
+    def setUp_again(self):
+        self.tearDown(); self.setUp()
+
+    def test_resume_lists_claude_items_delta_and_never_writes_ledger(self):
+        self.ledger([item("W-1"), item("W-5", kind="evidence-prep"),
+                     item("W-9", kind="decision", providers=["claude"], **{"glm-executable": False, "decision-rights": "user"}),
+                     item("W-10", kind="commander-task", providers=["claude"], **{"glm-executable": False, "auto-start": False}),
+                     item("W-11", kind="commander-task", providers=["claude"], status="queued",
+                          **{"glm-executable": False})])
+        before = open(self.ledger_path).read()
+        self.window()
+        self.assertEqual(open(self.ledger_path).read(), before)
+        # during the window the GLM commander finishes W-5 and queues W-12; W-11 becomes ready
+        d = yaml.safe_load(before)
+        for i in d["items"]:
+            if i["id"] == "W-5":
+                i.update(status="done", owner="glm-commander")
+            if i["id"] == "W-11":
+                i["status"] = "ready"
+        d["items"].append(item("W-12", kind="commander-task", status="queued"))
+        with open(self.ledger_path, "w") as f:
+            yaml.safe_dump(d, f)
+        self.h.agent_list += [ag("glm-commander"), ag("glm-w-1", "working"), ag("glm-stray")]
+        self.h.calls.clear()
+        self.t += 4000; self.windows = {}
+        self.step()
+        msgs = self.h.prompts("fw-commander")
+        self.assertEqual(len(msgs), 1)
+        m = msgs[0]
+        self.assertIn("W-9 [decision, decision-rights user]", m)
+        self.assertIn("W-10", m); self.assertIn("W-11", m)
+        self.assertNotIn("W-1 [lane", m)                        # glm-capable items are not 'for you'
+        self.assertIn("W-5 ready→done owner -→glm-commander", m)
+        self.assertIn("W-12 new (queued)", m)
+        self.assertIn("glm-w-1 (W-1)", m)                       # auto-started lane listed...
+        self.assertIn("GLM agents still running", m)
+        self.assertIn("glm-stray", m)
+        self.assertFalse([c for c in self.h.find("pane", "close") if c[2].startswith("w1:pT")])  # not closed
+
+    def test_running_autostart_reported_if_ledger_becomes_unreadable(self):
+        self.ledger([item("W-1")])
+        self.window()
+        os.remove(self.ledger_path)
+        self.h.agent_list += [ag("glm-commander"), ag("glm-w-1", "working")]
+        self.h.calls.clear()
+        self.t += 4000
+        self.step()
+        self.assertIn("glm-w-1 (W-1)", self.h.prompts("fw-commander")[0])
+
+    def test_running_autostart_reported_when_commander_handoff_was_skipped(self):
+        self.ledger([item("W-1")])
+        self.h.agent_list = []
+        self.window()
+        self.assertTrue(self.st["commander"]["skipped"])
+        self.h.agent_list += [ag("fw-commander"), ag("glm-w-1", "working")]
+        self.h.calls.clear()
+        self.t += 4000
+        self.step()
+        self.assertIn("glm-w-1 (W-1)", self.h.prompts("fw-commander")[0])
+
+
+class ContextTests(Base):
+    def test_checkpoint_fires_once_and_rearms(self):
+        self.h.agent_list = [ag("fw-bundle", "working", session="S1")]
+        self.contexts = {"S1": 85}
+        self.step()
+        self.assertEqual(len(self.h.prompts("fw-bundle")), 1)
+        self.assertIn("CONTEXT CHECKPOINT (fleet guard): your context window is at 85%", self.h.prompts("fw-bundle")[0])
+        self.assertIn("CTX", self.kinds())
+        self.step(); self.contexts["S1"] = 90; self.step()
+        self.assertEqual(len(self.h.prompts("fw-bundle")), 1)       # still armed off
+        self.contexts["S1"] = 60                                    # not yet below 50
+        self.step()
+        self.contexts["S1"] = 85; self.step()
+        self.assertEqual(len(self.h.prompts("fw-bundle")), 1)
+        self.contexts["S1"] = 40                                    # compaction
+        self.step()
+        self.contexts["S1"] = 82; self.step()
+        self.assertEqual(len(self.h.prompts("fw-bundle")), 2)
+        self.assertEqual(fg.load_state()["ctx_sent"], {"fw-bundle": 82})
+
+    def test_glm_agents_and_missing_snapshot(self):
+        self.h.agent_list = [ag("glm-x", session="S2"), ag("fw-y", session="NOSNAP")]
+        self.contexts = {"S2": 99}
+        self.step()
+        self.assertEqual(len(self.h.prompts("glm-x")), 1)
+        self.assertEqual(self.h.prompts("fw-y"), [])
+
+    def test_no_checkpoint_to_paused_claude_agent(self):
+        self.h.agent_list = [ag("fw-bundle", "idle", session="S1")]
+        self.contexts = {"S1": 95}
+        with open(fg.FLAG, "w") as f:
+            f.write("x")
+        self.st = {"wake_at": self.t + 100}
+        self.step()
+        self.assertEqual(self.h.prompts("fw-bundle"), [])
+
+
+class ResetAndZaiTests(Base):
+    def test_reset_refuses_active_replacements_without_archiving(self):
+        for state in ({"handoff": {"fw-lane": {}}},
+                      {"commander": {"agent": "glm-commander"}},
+                      {"failed_autostarts": {"W-1": {}}},
+                      {"zai_paused": True, "glm_paused": ["glm-lane"]}):
+            with self.subTest(state=state):
+                fg.save_state(state)
+                with open(fg.FLAG, "w") as flag:
+                    flag.write("paused")
+                with self.assertRaisesRegex(ValueError, "cannot reset"):
+                    fg.reset_state()
+                with open(fg.STATE) as saved:
+                    self.assertEqual(json.load(saved), state)
+                self.assertTrue(os.path.exists(fg.FLAG))
+                self.assertFalse(os.path.exists(os.path.join(self.tmp, "archive")))
+
+    def test_reset_state_archives(self):
+        for p in (fg.STATE, fg.FLAG, fg.EVENTS):
+            with open(p, "w") as f:
+                f.write("stale")
+        dest, moved = fg.reset_state()
+        self.assertEqual(sorted(moved), ["PAUSED", "events.jsonl", "state.json"])
+        self.assertTrue(os.path.isdir(dest))
+        self.assertRegex(os.path.basename(dest), r"^\d{4}-\d\d-\d\d-\d{6}$")
+        with open(os.path.join(dest, "state.json")) as f:
+            self.assertEqual(f.read(), "stale")
+        for p in (fg.STATE, fg.FLAG, fg.EVENTS):
+            self.assertFalse(os.path.exists(p))
+
+    def test_zai_trip_pauses_glm_and_resumes(self):
+        self.h.agent_list = [ag("glm-a", "working"), ag("glm-b", "idle"), ag("fw-c", "working")]
+        self.zai = {"zai_5h": (95, self.t + 600)}
+        self.step()
+        self.assertEqual(self.h.find("agent", "send-keys"), [("agent", "send-keys", "glm-a", "esc")])
+        self.assertTrue(self.st["zai_paused"])
+        self.t += 700
+        self.zai = {"zai_5h": (0, self.t + 18000)}
+        self.step()
+        self.assertEqual(len(self.h.prompts("glm-a")), 1)
+        self.assertIn("Z.AI usage window reset", self.h.prompts("glm-a")[0])
+        self.assertFalse(self.st["zai_paused"])
+
+    def test_claude_trip_pauses_only_working_ri_agents(self):
+        self.h.agent_list = [ag("fw-a", "working"), ag("fw-b", "idle"), ag("glm-c", "working")]
+        self.trip_claude()
+        self.step()
+        self.assertEqual(self.h.find("agent", "send-keys"), [("agent", "send-keys", "fw-a", "esc")])
+        self.assertTrue(os.path.exists(fg.FLAG))
+
+
+if __name__ == "__main__":
+    unittest.main()

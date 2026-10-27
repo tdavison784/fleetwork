@@ -1,0 +1,28 @@
+# Seed batch for this ledger. Ingest it once with:
+#     ledger apply seed.yaml --actor {{owner}}
+# After that the ledger lives in history.jsonl; edit it only through `ledger` commands or new apply batches.
+# Batch format (docs/ARCHITECTURE.md "Apply batches"): `header:` keys are merged into the ledger header;
+# each entry under `items:` adds an item, or edits the item with that id if it exists.
+header:
+  version: 2
+  ledger: {{ledger}}
+  prefix: {{prefix}}
+  providers:
+    {{provider}}: {adapter: {{provider_adapter}}, limits: {lanes: {{lane_limit}}}}
+  roles:
+    owner: {actors: ["{{owner}}"]}
+    commander: {actors: ["{{commander_agent}}"]}
+  delegations:
+    - {role: commander, may: gates.resolve, gate: {type: human, who: owner}, requires: {quote: true}}
+    - {role: commander, may: items.add, kinds: [task, review, evidence, incident, lane]}
+    - {role: commander, may: items.drop, kinds: [task, evidence]}
+    - {role: commander, may: decide, rights: commander}
+  never: [push, force-delete-branch, answer-trust-dialog, edit-delegations]
+  formulas: {lane: formulas/lane.yaml}
+  events: []
+items:
+  - id: {{prefix}}-0001
+    title: Approve MISSION.md and the first wave of lanes
+    kind: decision
+    run: {rights: owner}
+    why: "fleet init {{date}}: nothing starts before the owner approves the mission"

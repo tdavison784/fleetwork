@@ -1,0 +1,31 @@
+# A small v2 ledger in apply-batch form, used by model and (later) lint/derive tests. Deliberately generic.
+header:
+  version: 2
+  ledger: demo
+  prefix: D
+  providers:
+    p1: {adapter: none, limits: {lanes: 2}}
+  roles:
+    owner: {actors: [owner-1]}
+    commander: {actors: [cmd-1]}
+  never: [push]
+items:
+  - id: D-0001
+    title: Approve the mission
+    kind: decision
+    status: done
+    run: {rights: owner}
+  - id: D-0002
+    title: Build the thing
+    kind: lane
+    status: open
+    needs: [D-0001]
+    gates:
+      - {type: window, provider: p1, headroom: 30%}
+    run: {providers: [p1], auto-start: true, profile: builder}
+    guard: {forbid-read: ["sealed/**"], freeze: [data.json]}
+    brief: briefs/thing.md
+    links: {discovered-from: D-0001}
+    budget: {estimate: {p1: {tokens: 200k}}}
+    why: "first lane"
+    custom-field: kept verbatim

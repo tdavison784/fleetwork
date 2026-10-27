@@ -1,0 +1,13 @@
+[pack]
+name = "git"
+description = "Lanes as git worktrees and branches; integration by merge with ownership and frozen-path checks"
+requires = ["core"]
+
+[vars]
+merge_policy = "no-ff"
+
+[config.git]
+integration-branch = "branch lanes are cut from and merged into (required)"
+lane-prefix = "lane branches are <lane-prefix>/<lane>, worktrees .claude/worktrees/<lane-prefix>-<lane> (required)"
+merge = "squash | no-ff (default no-ff; squash keeps product history short at work)"
+frozen = "globs no lane may change; fleet lane merge refuses a diff touching them"

@@ -1,0 +1,21 @@
+[project]
+name = "fleetwork"
+version = "0.0.1"
+description = "A ledger-centred method for running a fleet of coding agents against one goal"
+requires-python = ">=3.11"          # tomllib
+dependencies = ["PyYAML>=6"]       # the only third-party dependency the kit allows (AGENTS.md)
+
+[project.scripts]
+ledger = "fleetwork.ledger.cli:main"
+fleet = "fleetwork.runtime.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "guard", "tools"]
+testpaths = ["tests", "guard", "tools"]
