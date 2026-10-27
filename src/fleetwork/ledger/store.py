@@ -51,6 +51,13 @@ def _timestamp():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _same_json(left, right):
+    """Compare JSON values without Python's bool/int/float equality coercions."""
+    def encode(value):
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return encode(left) == encode(right)
+
+
 def _refresh(ledger_dir, entries):
     # Callers hold the history lock, so this snapshot cannot become stale.
     ledger = index._rebuild(Path(ledger_dir), entries)
@@ -139,7 +146,8 @@ def apply(ledger_dir, batch, actor):
         if header:
             old_header = current.header.to_dict()
             changed = {key: value for key, value in header.items()
-                       if (key in old_header if value is None else old_header.get(key) != value)}
+                       if (key in old_header if value is None
+                           else key not in old_header or not _same_json(old_header[key], value))}
             if changed:
                 next_header = dict(old_header)
                 for key, value in changed.items():
@@ -162,11 +170,13 @@ def apply(ledger_dir, batch, actor):
                 current = add("add", item_id, item)
             else:
                 old_item = existing.to_dict()
-                if any(key in item and item[key] != old_item.get(key) for key in ("status", "owner")):
+                if any(key in item and not _same_json(item[key], old_item.get(key))
+                       for key in ("status", "owner")):
                     raise ConfigError(f"{item_id}: status and owner changes require a mutation command")
                 diff = {key: value for key, value in item.items()
                         if key not in ("id", "status", "owner")
-                        and (key in old_item if value is None else old_item.get(key) != value)}
+                        and (key in old_item if value is None
+                             else key not in old_item or not _same_json(old_item[key], value))}
                 if diff:
                     current = add("edit", item_id, diff)
         if planned:

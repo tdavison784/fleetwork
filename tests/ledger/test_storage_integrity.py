@@ -43,6 +43,26 @@ def test_nested_json_values_rebuild_identically(tmp_path):
     assert {name: (tmp_path / name).read_bytes() for name in before} == before
 
 
+@pytest.mark.parametrize("old,new", [(1, True), (True, 1), (1, 1.0), (1.0, 1)])
+def test_apply_distinguishes_nested_json_types_and_repeat_is_noop(tmp_path, old, new):
+    seeded(tmp_path)
+
+    def batch(value):
+        nested = {"x": [value]}
+        return {"header": {"custom": nested}, "items": [{"id": "A-1", "custom": nested}]}
+
+    store.apply(tmp_path, batch(old), "owner")
+    before = len(history.read(tmp_path))
+    assert len(store.apply(tmp_path, batch(new), "owner")) == 2
+    entries = history.read(tmp_path)
+    assert len(entries) == before + 2
+    ledger = history.replay(entries)
+    assert type(ledger.header.to_dict()["custom"]["x"][0]) is type(new)
+    assert type(ledger.item("A-1").to_dict()["custom"]["x"][0]) is type(new)
+    assert store.apply(tmp_path, batch(new), "owner") == []
+    assert len(history.read(tmp_path)) == before + 2
+
+
 @pytest.mark.parametrize("value", [None, [], {"id": "shadow"}])
 def test_header_items_reserved_on_every_write_path(tmp_path, value):
     seeded(tmp_path)
