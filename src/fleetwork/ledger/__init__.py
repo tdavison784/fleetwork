@@ -2,10 +2,10 @@
 
 Module map (one owner each; docs/WORKPACKAGES.md):
   model.py        data model (shared; changes need the commander)       all
-  history.py      history.jsonl: append with CAS, read, verify          WP-01
-  index.py        ledger.db: SQLite index rebuilt from the log          WP-01
-  view.py         LEDGER.yaml: the generated read-only view             WP-01
-  store.py        open a ledger directory; apply/rebuild glue           WP-01
+  history.py      history.jsonl: append with CAS, read, verify
+  index.py        ledger.db: SQLite index rebuilt from the log
+  view.py         LEDGER.yaml: the generated read-only view
+  store.py        open a ledger directory; apply/rebuild glue
   lint.py         `ledger lint` findings                                WP-02
   derive.py       ready / offerable / autostart / decidable (§4.3)      WP-02
   migrate.py      v1 -> v2                                              WP-03
