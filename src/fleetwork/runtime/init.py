@@ -9,8 +9,11 @@ before a single file is written, listing every missing name. Existing files are 
 Built-in variables: project, ledger, date (YYYY-MM-DD), packs (comma-separated).
 """
 import datetime
+import json
 import re
 from pathlib import Path
+
+import yaml
 
 from fleetwork.errors import ConfigError
 
@@ -20,6 +23,72 @@ PLACEHOLDER = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
 def render(text, variables):
     missing = sorted({m for m in PLACEHOLDER.findall(text) if m not in variables})
     return PLACEHOLDER.sub(lambda m: str(variables.get(m.group(1), m.group(0))), text), missing
+
+
+def render_yaml(text, variables, source):
+    """Substitute YAML scalar contents without allowing values to change its structure."""
+    names = PLACEHOLDER.findall(text)
+    missing = sorted({name for name in names if name not in variables})
+    if missing:
+        return text, missing
+
+    # Mask placeholders before parsing so they are valid even in flow mappings.
+    tokens = {}
+    def mask(match):
+        token = f"FLEETPLACEHOLDER{len(tokens)}END"
+        while token in text:
+            token += "X"
+        tokens[token] = match.group(1)
+        return token
+
+    masked = PLACEHOLDER.sub(mask, text)
+    try:
+        root = yaml.compose(masked, Loader=yaml.SafeLoader)
+        replacements = []
+        visited = set()
+
+        def visit(node):
+            if id(node) in visited:
+                return
+            visited.add(id(node))
+            if isinstance(node, yaml.ScalarNode):
+                matches = [token for token in tokens if token in node.value]
+                if not matches:
+                    return
+                value = node.value
+                for token in matches:
+                    value = value.replace(token, str(variables[tokens[token]]))
+                if len(matches) == 1 and node.value == matches[0] and tokens[matches[0]] in {
+                    "lane_limit", "context_checkpoint"
+                }:
+                    if not re.fullmatch(r"[0-9]+", value):
+                        raise ConfigError(f"{source}: {tokens[matches[0]]} must be an integer")
+                    encoded = str(int(value))
+                else:
+                    encoded = json.dumps(value, ensure_ascii=True)
+                replacements.append((node.start_mark.index, node.end_mark.index, encoded))
+            elif isinstance(node, yaml.SequenceNode):
+                for child in node.value:
+                    visit(child)
+            elif isinstance(node, yaml.MappingNode):
+                for key, value in node.value:
+                    visit(key)
+                    visit(value)
+
+        if root is not None:
+            visit(root)
+        # Remaining tokens occur in comments. Keep comment substitutions on one line.
+        for token, name in tokens.items():
+            start = masked.find(token)
+            if not any(begin <= start < end for begin, end, _ in replacements):
+                value = str(variables[name]).replace("\n", " ").replace("\r", " ")
+                replacements.append((start, start + len(token), value))
+        for start, end, value in sorted(replacements, reverse=True):
+            masked = masked[:start] + value + masked[end:]
+        yaml.safe_load(masked)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"invalid YAML template {source}: {exc}") from exc
+    return masked, []
 
 
 def plan(packs, variables):
@@ -39,7 +108,9 @@ def plan(packs, variables):
             except UnicodeDecodeError:
                 out[rel] = data
                 continue
-            rendered, miss = render(text, variables)
+            rendered, miss = (render_yaml(text, variables, f"{pack.name}:{rel}")
+                              if src.suffix.lower() in {".yaml", ".yml"}
+                              else render(text, variables))
             for m in miss:
                 missing.setdefault(m, []).append(f"{pack.name}:{rel}")
             out[rel] = rendered.encode()

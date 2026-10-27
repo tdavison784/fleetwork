@@ -16,7 +16,9 @@ from fleetwork.errors import ConfigError, FleetworkError, exit_code
 from fleetwork.runtime import init as init_mod
 from fleetwork.runtime import lanes, packs
 
-GUARD = Path(__file__).resolve().parents[3] / "guard" / "fleet_guard.py"
+_ASSETS = Path(__file__).resolve().parents[1] / "_assets"
+GUARD = (_ASSETS / "guard" / "fleet_guard.py" if _ASSETS.is_dir()
+         else Path(__file__).resolve().parents[3] / "guard" / "fleet_guard.py")
 
 
 def _kv(pairs):

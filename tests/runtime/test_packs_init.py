@@ -64,6 +64,33 @@ def test_rendered_seed_is_a_valid_ledger(tmp_path):
         assert prof["provider"] == "p1" and prof["env"]["DO_NOT_TRACK"] == "1"
 
 
+def test_yaml_variables_remain_scalars_and_preserve_numeric_settings(tmp_path):
+    ps = packs.resolve(["eval-integrity"])
+    values = {**VARS, "owner": 'Ada "A": [x]\nsecond', "provider": "true",
+              "model": "a: b # c", "runtime": "null", "prefix": "A:B",
+              "commander_agent": "[agent]", "lane_limit": "03", "context_checkpoint": "75"}
+    init.init(tmp_path, ps, init.variables_for(ps, "demo", "yes", values))
+    seed = yaml.safe_load((tmp_path / "seed.yaml").read_text())
+    assert seed["header"]["ledger"] == "yes"
+    assert seed["header"]["roles"]["owner"]["actors"] == [values["owner"]]
+    assert seed["header"]["roles"]["commander"]["actors"] == [values["commander_agent"]]
+    assert seed["header"]["providers"]["true"]["limits"]["lanes"] == 3
+    assert seed["items"][0]["id"] == "A:B-0001"
+    for name in ("builder", "commander", "reviewer", "investigator"):
+        profile = yaml.safe_load((tmp_path / "profiles" / f"{name}.yaml").read_text())
+        assert (profile["runtime"], profile["provider"], profile["model"]) == ("null", "true", "a: b # c")
+        if name != "investigator":
+            assert profile["context-checkpoint"] == 75
+
+
+def test_invalid_yaml_numeric_variable_aborts_before_writing(tmp_path):
+    ps = packs.resolve(["core"])
+    variables = init.variables_for(ps, "demo", "goal", {**VARS, "lane_limit": "2, extra: true"})
+    with pytest.raises(ConfigError, match="lane_limit must be an integer"):
+        init.init(tmp_path / "out", ps, variables)
+    assert not (tmp_path / "out").exists()
+
+
 def test_template_conflicts_between_packs_are_errors(tmp_path):
     for name in ("core", "dup"):
         d = tmp_path / "packs" / name

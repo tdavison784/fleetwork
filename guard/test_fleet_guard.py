@@ -17,13 +17,15 @@ class FakeHerdr:
         self.calls.append(args)
         if args[:2] == ("agent", "list"):
             return {"result": {"agents": list(self.agent_list)}}
+        if args[:2] == ("agent", "get"):
+            return {"result": {"agent": {"agent_status": "idle"}}}
         if args[:2] == ("tab", "create"):
             self.n += 1
             return {"result": {"root_pane": {"pane_id": f"w1:pT{self.n}"}}}
         if args[:2] == ("pane", "split"):
             self.n += 1
             return {"result": {"pane": {"pane_id": f"w1:pG{self.n}"}}}
-        return {}
+        return {"result": {}}
 
     def find(self, *prefix):
         return [c for c in self.calls if c[:len(prefix)] == prefix]
@@ -116,6 +118,62 @@ class Base(unittest.TestCase):
 
 
 class HandoffTests(Base):
+    def test_failed_close_keeps_agents_paused_and_retries(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.h.calls.clear()
+        self.t += 4000
+        original = fg.herdr
+        def fail_close(*args, **kwargs):
+            if args[:2] == ("pane", "close"):
+                return {}
+            return original(*args, **kwargs)
+        fg.herdr = fail_close
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertIn("fw-bundle", self.st["handoff"])
+        self.assertFalse(self.h.prompts("fw-bundle"))
+        self.assertFalse(self.h.prompts("fw-commander"))
+        fg.herdr = original
+        self.step()
+        self.assertFalse(os.path.exists(fg.FLAG))
+        self.assertEqual(len(self.h.prompts("fw-bundle")), 1)
+
+    def test_wait_failure_does_not_close_or_resume(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.h.calls.clear()
+        self.t += 4000
+        original = fg.herdr
+        def fail_wait(*args, **kwargs):
+            if args[:2] == ("agent", "wait"):
+                return {}
+            return original(*args, **kwargs)
+        fg.herdr = fail_wait
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertFalse(self.h.find("pane", "close"))
+        self.assertFalse(self.h.prompts("fw-bundle"))
+
+    def test_unknown_agent_status_does_not_close_or_resume(self):
+        self.fleet(commander="working")
+        self.trip_claude()
+        self.go()
+        self.h.calls.clear()
+        self.t += 4000
+        original = fg.herdr
+        def unknown_status(*args, **kwargs):
+            if args[:2] == ("agent", "get"):
+                return {}
+            return original(*args, **kwargs)
+        fg.herdr = unknown_status
+        self.step()
+        self.assertTrue(os.path.exists(fg.FLAG))
+        self.assertFalse(self.h.find("pane", "close"))
+        self.assertFalse(self.h.prompts("fw-bundle"))
+
     def test_commander_handed_off_before_lanes(self):
         self.fleet()
         self.trip_claude()
@@ -210,7 +268,7 @@ class HandbackTests(Base):
         self.assertIn("glm-bundle", cm)
         self.assertIn("commit(s) on the integration branch", cm)
         self.assertIn("glm-extra", cm)           # unregistered glm agent listed
-        self.assertNotIn("glm-bundle,", cm.split("NOT started")[-1])
+        self.assertNotIn("glm-bundle,", cm.split("still running")[-1])
         self.assertEqual(len(self.h.prompts("fw-bundle")), 1)
         self.assertIn("GLM-5.3 agent (glm-bundle)", self.h.prompts("fw-bundle")[0])
         self.assertFalse(os.path.exists(fg.FLAG))
@@ -311,6 +369,23 @@ class LedgerTests(Base):
     def cmd_prompt(self):
         return self.h.prompts("glm-commander")[0]
 
+    def test_existing_worktree_requires_matching_repository_and_branch(self):
+        wt = os.path.join(os.path.dirname(self.cmd), "lane-w-1")
+        os.makedirs(wt)
+        def fake(cwd, *args):
+            if args[-1] == "--git-common-dir":
+                return 0, "/repo/.git" if cwd == self.cmd else candidate[0]
+            if args[-1] == "--show-toplevel":
+                return 0, wt
+            return 0, candidate[1]
+        fg.run_git = fake
+        candidate = ["/other/.git", "lane/w-1"]
+        self.assertIsNone(fg.make_lane_worktree(self.a, "w-1")[0])
+        candidate[:] = ["/repo/.git", "wrong"]
+        self.assertIsNone(fg.make_lane_worktree(self.a, "w-1")[0])
+        candidate[:] = ["/repo/.git", "lane/w-1"]
+        self.assertEqual(fg.make_lane_worktree(self.a, "w-1"), (wt, "lane/w-1"))
+
     def test_decision_claude_only_and_noauto_never_started_or_offered(self):
         self.ledger([
             item("W-1"),
@@ -409,9 +484,30 @@ class LedgerTests(Base):
         self.assertIn("W-5 ready→done owner -→glm-commander", m)
         self.assertIn("W-12 new (queued)", m)
         self.assertIn("glm-w-1 (W-1)", m)                       # auto-started lane listed...
-        self.assertNotIn("glm-w-1", m.split("NOT started by the guard")[-1].split("Ledger")[0])  # ...not a stray
+        self.assertIn("GLM agents still running", m)
         self.assertIn("glm-stray", m)
         self.assertFalse([c for c in self.h.find("pane", "close") if c[2].startswith("w1:pT")])  # not closed
+
+    def test_running_autostart_reported_if_ledger_becomes_unreadable(self):
+        self.ledger([item("W-1")])
+        self.window()
+        os.remove(self.ledger_path)
+        self.h.agent_list += [ag("glm-commander"), ag("glm-w-1", "working")]
+        self.h.calls.clear()
+        self.t += 4000
+        self.step()
+        self.assertIn("glm-w-1 (W-1)", self.h.prompts("fw-commander")[0])
+
+    def test_running_autostart_reported_when_commander_handoff_was_skipped(self):
+        self.ledger([item("W-1")])
+        self.h.agent_list = []
+        self.window()
+        self.assertTrue(self.st["commander"]["skipped"])
+        self.h.agent_list += [ag("fw-commander"), ag("glm-w-1", "working")]
+        self.h.calls.clear()
+        self.t += 4000
+        self.step()
+        self.assertIn("glm-w-1 (W-1)", self.h.prompts("fw-commander")[0])
 
 
 class ContextTests(Base):

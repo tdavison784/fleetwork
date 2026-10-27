@@ -16,7 +16,9 @@ from pathlib import Path
 
 from fleetwork.errors import ConfigError
 
-KIT_PACKS = Path(__file__).resolve().parents[3] / "packs"
+_ASSETS = Path(__file__).resolve().parents[1] / "_assets"
+# Editable installs and the checkout use the repository's packs directly.
+KIT_PACKS = _ASSETS / "packs" if _ASSETS.is_dir() else Path(__file__).resolve().parents[3] / "packs"
 
 
 @dataclass
