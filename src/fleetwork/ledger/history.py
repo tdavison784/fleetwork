@@ -3,6 +3,8 @@ import copy
 import fcntl
 import json
 import os
+import stat
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -91,10 +93,37 @@ class _Transaction:
                                      separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
                          for e in entries)
         if lines:
-            with self.path.open("ab") as file:
-                file.write(lines)
-                file.flush()
-                os.fsync(file.fileno())
+            # Replace the whole log under the separate, stable lock. A process
+            # dying while writing a batch then leaves either the old log or the
+            # complete new log, never a valid-looking prefix of the batch.
+            try:
+                original = self.path.read_bytes()
+                mode = stat.S_IMODE(self.path.stat().st_mode)
+            except FileNotFoundError:
+                original, mode = b"", None
+            fd, tmp = tempfile.mkstemp(prefix=".history-", dir=self.path.parent)
+            try:
+                with os.fdopen(fd, "wb") as file:
+                    if mode is not None:
+                        os.fchmod(file.fileno(), mode)
+                    file.write(original)
+                    file.write(lines)
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.replace(tmp, self.path)
+                # Persist the directory entry as well as the file contents.
+                try:
+                    directory_fd = os.open(self.path.parent, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                except OSError as exc:
+                    raise ConfigError("history was replaced, but directory sync failed; "
+                                      "durability is uncertain, inspect history before retrying") from exc
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
 
 
 @contextmanager

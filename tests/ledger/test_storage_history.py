@@ -1,5 +1,6 @@
 import json
 import multiprocessing
+from pathlib import Path
 
 import pytest
 
@@ -43,6 +44,58 @@ def test_batch_checks_all_before_writing(tmp_path):
     assert (tmp_path / history.FILENAME).read_bytes() == before
     with pytest.raises(VersionConflict):
         history.append(tmp_path, entry(2), 0)
+
+
+@pytest.mark.parametrize("failure", ["fsync", "replace"])
+def test_failed_batch_write_preserves_previous_log(tmp_path, monkeypatch, failure):
+    history.append(tmp_path, entry(1), 0)
+    path = tmp_path / history.FILENAME
+    before = path.read_bytes()
+
+    def fail(*args):
+        raise OSError("injected failure")
+
+    monkeypatch.setattr(history.os, failure, fail)
+    with pytest.raises(OSError, match="injected failure"):
+        history.append_many(tmp_path, [entry(2, "edit", diff={"title": "new"}),
+                                       entry(3, "edit", diff={"note": "later"})], 1)
+    assert path.read_bytes() == before
+    assert not list(tmp_path.glob(".history-*"))
+
+
+def test_batch_is_complete_before_atomic_replacement(tmp_path, monkeypatch):
+    history.append(tmp_path, entry(1), 0)
+    path = tmp_path / history.FILENAME
+    before = path.read_bytes()
+    replace = history.os.replace
+
+    def inspect(source, destination):
+        assert path.read_bytes() == before
+        assert len(Path(source).read_bytes().splitlines()) == 3
+        replace(source, destination)
+
+    monkeypatch.setattr(history.os, "replace", inspect)
+    history.append_many(tmp_path, [entry(2, "edit", diff={"title": "new"}),
+                                   entry(3, "edit", diff={"note": "later"})], 1)
+    assert len(history.read(tmp_path)) == 3
+
+
+def test_directory_sync_failure_reports_replacement_and_uncertain_durability(tmp_path, monkeypatch):
+    history.append(tmp_path, entry(1), 0)
+    fsync = history.os.fsync
+    calls = 0
+
+    def fail_directory(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected directory sync failure")
+        fsync(fd)
+
+    monkeypatch.setattr(history.os, "fsync", fail_directory)
+    with pytest.raises(ConfigError, match="history was replaced.*durability is uncertain"):
+        history.append(tmp_path, entry(2, "edit", diff={"title": "new"}), 1)
+    assert len(history.read(tmp_path)) == 2
 
 
 @pytest.mark.parametrize("data,exception", [

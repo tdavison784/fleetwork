@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from threading import Event
@@ -38,10 +39,13 @@ def test_rebuild_is_byte_identical_and_view_round_trips(tmp_path):
 
 def test_rebuild_rejects_conflict_without_replacing_cache(tmp_path):
     good = entries()
-    index.rebuild(tmp_path, good)
+    history.append_many(tmp_path, good, 0)
+    index.rebuild(tmp_path)
     before = (tmp_path / index.FILENAME).read_bytes()
+    with (tmp_path / history.FILENAME).open("ab") as log:
+        log.write((json.dumps(good[0].to_dict()) + "\n").encode())
     with pytest.raises(VersionConflict):
-        index.rebuild(tmp_path, [good[0], good[0]])
+        index.rebuild(tmp_path)
     assert (tmp_path / index.FILENAME).read_bytes() == before
 
 

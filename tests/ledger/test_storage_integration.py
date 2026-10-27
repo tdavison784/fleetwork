@@ -8,8 +8,8 @@ import sys
 import pytest
 import yaml
 
-from fleetwork.errors import VersionConflict
-from fleetwork.ledger import history
+from fleetwork.errors import ConfigError, VersionConflict
+from fleetwork.ledger import history, index, store, view
 from fleetwork.ledger.model import HistoryEntry
 
 
@@ -193,6 +193,25 @@ def test_apply_refuses_to_remove_the_last_owner(tmp_path):
     assert (ledger_dir / "LEDGER.yaml").read_bytes() == before_view
 
 
+def test_commit_refuses_to_remove_the_last_owner(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    before = (ledger_dir / "history.jsonl").read_bytes()
+    with pytest.raises(ConfigError, match="retain at least one owner"):
+        store.commit(ledger_dir, "owner", "header", None, {"roles": None})
+    assert (ledger_dir / "history.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("actors", [[None], [""], ["  "], ["owner", None], "owner"])
+def test_header_rejects_malformed_owner_actors(tmp_path, actors):
+    ledger_dir = make_ledger(tmp_path)
+    before = (ledger_dir / "history.jsonl").read_bytes()
+    batch = write_batch(tmp_path / "invalid-owner.yaml", {"header": {"roles": {"owner": {"actors": actors}}}})
+    assert apply(ledger_dir, batch).returncode != 0
+    with pytest.raises(ConfigError, match="owner actors must be nonempty strings"):
+        store.commit(ledger_dir, "owner", "header", None, {"roles": {"owner": {"actors": actors}}})
+    assert (ledger_dir / "history.jsonl").read_bytes() == before
+
+
 def test_invalid_later_entry_does_not_partially_apply_batch(tmp_path):
     ledger_dir = make_ledger(tmp_path)
     batch = write_batch(
@@ -217,6 +236,43 @@ def test_invalid_later_entry_does_not_partially_apply_batch(tmp_path):
         item.get("id") == "W-9010"
         for item in yaml.safe_load((ledger_dir / "LEDGER.yaml").read_text(encoding="utf-8"))["items"]
     )
+
+
+def test_apply_checks_authority_after_header_change(tmp_path):
+    ledger_dir = make_ledger(tmp_path)
+    batch = write_batch(
+        tmp_path / "transfer.yaml",
+        {"header": {"roles": {"owner": {"actors": ["other"]}}},
+         "items": [{"id": "W-9010", "title": "Unauthorized after transfer"}]},
+    )
+    before = (ledger_dir / "history.jsonl").read_bytes()
+    refused = apply(ledger_dir, batch)
+    assert refused.returncode != 0
+    assert (ledger_dir / "history.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("failed_module,method", [(index, "_rebuild"), (view, "write")])
+@pytest.mark.parametrize("operation", ["apply", "commit"])
+def test_refresh_failure_reports_committed_history(tmp_path, monkeypatch, failed_module, method, operation):
+    ledger_dir = make_ledger(tmp_path)
+    old_version = len(history.read(ledger_dir))
+    batch = {"items": [{"id": "W-9010", "title": "Committed"}]}
+
+    def fail(*args, **kwargs):
+        raise OSError("injected refresh failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(failed_module, method, fail)
+        with pytest.raises(ConfigError, match=f"history committed through version {old_version + 1}.*ledger rebuild"):
+            if operation == "apply":
+                store.apply(ledger_dir, batch, "owner")
+            else:
+                store.commit(ledger_dir, "owner", "add", "W-9010", batch["items"][0])
+    assert len(history.read(ledger_dir)) == old_version + 1
+    store.rebuild(ledger_dir)
+    assert store.load(ledger_dir).item("W-9010").title == "Committed"
+    assert store.apply(ledger_dir, batch, "owner") == []
+    assert len(history.read(ledger_dir)) == old_version + 1
 
 
 def test_load_repairs_corrupt_cache_even_when_cached_version_matches_log(tmp_path):

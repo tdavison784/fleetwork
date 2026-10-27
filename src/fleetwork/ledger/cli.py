@@ -138,11 +138,38 @@ def _todo(name):
 HANDLERS = {name: _todo(name) for name in COMMANDS}
 
 
+class _BatchLoader(yaml.SafeLoader):
+    """Reject ambiguous authoring input instead of silently dropping a key."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            # YAML merge keys intentionally allow an explicit key to override
+            # a value from an anchor; only repeated authored keys are ambiguous.
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in seen
+                seen.add(key)
+            except TypeError:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    "unhashable key", key_node.start_mark,
+                ) from None
+            if duplicate:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    f"duplicate key {key!r}", key_node.start_mark,
+                )
+        return super().construct_mapping(node, deep=deep)
+
+
 def _apply(args):
     from fleetwork.ledger import store
 
     try:
-        batch = yaml.safe_load(Path(args.file).read_text(encoding="utf-8"))
+        batch = yaml.load(Path(args.file).read_text(encoding="utf-8"), Loader=_BatchLoader)
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ConfigError(f"{args.file}: {exc}") from None
     changes = store.apply(store.locate(args.ledger), batch, args.actor)

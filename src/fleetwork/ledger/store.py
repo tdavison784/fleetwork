@@ -24,7 +24,16 @@ def _owners(header):
     if not isinstance(roles, dict) or not isinstance(roles.get("owner"), dict):
         return []
     actors = roles["owner"].get("actors", [])
-    return actors if isinstance(actors, list) else []
+    return [actor for actor in actors if isinstance(actor, str) and actor.strip()] if isinstance(actors, list) else []
+
+
+def _validate_owners(header):
+    roles = header.get("roles")
+    owner = roles.get("owner") if isinstance(roles, dict) else None
+    actors = owner.get("actors") if isinstance(owner, dict) else None
+    if (not isinstance(actors, list) or not actors
+            or any(not isinstance(actor, str) or not actor.strip() for actor in actors)):
+        raise ConfigError("ledger must retain at least one owner actor; owner actors must be nonempty strings")
 
 
 def _authorize(entries, actor, initial_header=None):
@@ -43,9 +52,20 @@ def _timestamp():
 
 
 def _refresh(ledger_dir, entries):
-    ledger = index.rebuild(ledger_dir, entries=entries)
+    # Callers hold the history lock, so this snapshot cannot become stale.
+    ledger = index._rebuild(Path(ledger_dir), entries)
     view.write(ledger_dir, ledger)
     return ledger
+
+
+def _refresh_after_commit(ledger_dir, entries):
+    try:
+        return _refresh(ledger_dir, entries)
+    except Exception as exc:
+        raise ConfigError(
+            f"history committed through version {entries[-1].v}, but index or view refresh failed: {exc}; "
+            "run ledger rebuild to repair derived files"
+        ) from exc
 
 
 def load(ledger_dir):
@@ -74,9 +94,11 @@ def commit(ledger_dir, actor, op, item_id, diff, why=None, expected_v=None):
             raise VersionConflict(f"expected version {expected_v}, found {version}")
         entry = HistoryEntry(v=version + 1, t=_timestamp(), actor=actor, op=op,
                              item=item_id, diff=diff, why=why)
-        history.replay([*entries, entry])  # reject invalid operations before changing the log
+        result = history.replay([*entries, entry])  # reject invalid operations before changing the log
+        if op == "header":
+            _validate_owners(result.header.to_dict())
         tx.append_many([entry], version)
-        _refresh(ledger_dir, [*entries, entry])
+        _refresh_after_commit(ledger_dir, [*entries, entry])
         return entry
 
 
@@ -100,6 +122,8 @@ def apply(ledger_dir, batch, actor):
         current = history.replay(entries)
 
         def add(op, item_id, diff):
+            # A preceding header entry may have changed the actor's authority.
+            _authorize([*entries, *planned], actor, header)
             entry = HistoryEntry(v=version + len(planned) + 1, t=_timestamp(), actor=actor,
                                  op=op, item=item_id, diff=diff)
             planned.append(entry)
@@ -116,8 +140,7 @@ def apply(ledger_dir, batch, actor):
                         next_header.pop(key, None)
                     else:
                         next_header[key] = value
-                if not _owners(next_header):
-                    raise ConfigError("ledger must retain at least one owner actor")
+                _validate_owners(next_header)
                 current = add("header", None, changed)
         for item in items:
             if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip():
@@ -141,5 +164,7 @@ def apply(ledger_dir, batch, actor):
                     current = add("edit", item_id, diff)
         if planned:
             tx.append_many(planned, version)
-        _refresh(ledger_dir, [*entries, *planned])
+            _refresh_after_commit(ledger_dir, [*entries, *planned])
+        else:
+            _refresh(ledger_dir, entries)
         return planned

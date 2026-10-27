@@ -16,18 +16,14 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def rebuild(ledger_dir, entries=None):
+def rebuild(ledger_dir):
     """Rebuild the cache atomically and return the replayed ledger.
 
-    A writer holding the history lock can supply its already-read entries, ensuring
-    the index represents exactly that snapshot. Invalid history leaves the old
-    cache untouched.
+    Invalid history leaves the old cache untouched.
     """
     directory = Path(ledger_dir)
-    if entries is None:
-        with history.transaction(directory) as tx:
-            return _rebuild(directory, tx.read())
-    return _rebuild(directory, list(entries))
+    with history.transaction(directory) as tx:
+        return _rebuild(directory, tx.read())
 
 
 def _rebuild(directory, entries):
